@@ -366,8 +366,8 @@ Notes:
 
 ## 8. MVP cut
 
-**v0 (smallest thing that proves the idea)**
-tray + one global chord + AX-then-copy capture + `say` playback + settings window with a shortcut recorder and voice picker. `say` is retained permanently as the bootstrap engine (no model download required, no licence cost), not thrown away in v0.5.
+**v0 — ✅ built** (see README.md and docs/DEV.md)
+tray menu (Speak / Stop / Settings… / Quit) · `Cmd+Shift+S` speak + `Cmd+Shift+X` stop, rebindable with an in-app recorder · AX-then-copy capture with the secure-input guard and a bounded 150 ms copy timeout · `say` playback (kept permanently as the bootstrap engine) · settings window that opens on demand and polls the Accessibility grant · one JSON config file · 8 unit tests · `scripts/check-licenses.sh` + `deny.toml` enforcing the licence decision in CI.
 
 **v0.5 (Kokoro)**
 Our own Rust pipeline on `ort` — **no third-party Kokoro crate** (licence-blocked): tokenizer, session/EP selection, chunker (balanced batching + inter-batch pauses), silence trim, `fp32` model download on first use, streaming playback through `rodio`, cache, voice picker with previews, speed slider. Plus the English front-end this creates: **text normalization**, a **cmudict lookup with our own ARPAbet→IPA table**, a **pronunciation-override file** (`~/.config/kiegen/pronounce.json`) for names and brand words, and an **optional espeak-ng subprocess** that handles out-of-dictionary words properly *if* the user has installed it — discovered on `PATH`, never bundled.

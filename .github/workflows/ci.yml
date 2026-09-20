@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install frontend deps
+        run: npm ci
+
+      - name: rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: frontend typecheck + build
+        run: npm run build
+
+      # The licence decision, enforced. Two independent checks:
+      #  1. offline graph scan (no install needed, works on any contributor machine)
+      #  2. cargo-deny (authoritative: SPDX evaluation, exceptions, source pinning)
+      - name: licence guard (offline)
+        run: ./scripts/check-licenses.sh
+
+      - uses: taiki-e/install-action@cargo-deny
+      - name: cargo-deny
+        run: cargo deny check
+        working-directory: src-tauri
+
+  bundle:
+    runs-on: macos-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: build the .app
+        run: npm run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiegen-app
+          path: src-tauri/target/release/bundle/macos/kiegen.app

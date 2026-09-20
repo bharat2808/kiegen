@@ -1,9 +1,10 @@
 [package]
 name = "kiegen"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Speak any selected text, from anywhere in macOS"
+authors = ["kiegen contributors"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,15 +21,20 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2.3.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri-plugin-global-shortcut = "2.3.2"
-tauri-plugin-store = "2.4.5"
+
+# Selection capture + synthetic key events.
+# Invariant: every entry here is MIT OR Apache-2.0 compatible. No GPL. See docs/DESIGN.md §5.
+[target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25.0"
+core-foundation = "0.10.1"
 accessibility-sys = "0.2.0"
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
-objc2-app-kit = "0.3.2"
+objc2-app-kit = { version = "0.3.2", features = ["NSPasteboard", "NSPasteboardItem"] }
+libc = "0.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

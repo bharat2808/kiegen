@@ -12,18 +12,26 @@
   "app": {
     "windows": [
       {
-        "title": "kiegen",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "kiegen settings",
+        "width": 620,
+        "height": 720,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": false
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Speak any selected text, from anywhere",
+    "longDescription": "kiegen lives in the menu bar. Select text in any app, press a shortcut, and hear it read aloud. Requires Accessibility permission to read the selection.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

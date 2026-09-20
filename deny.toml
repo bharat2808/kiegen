@@ -1,0 +1,69 @@
+# cargo-deny configuration — the CI-enforced half of the licence decision.
+#
+# kiegen is MIT OR Apache-2.0 (docs/DESIGN.md §5). This file makes "no GPL in the repo"
+# a failing check rather than a promise. Run locally with:
+#     cargo install cargo-deny && cargo deny check
+#
+# The offline equivalent, which needs no install, is scripts/check-licenses.sh.
+
+[graph]
+targets = [{ triple = "aarch64-apple-darwin" }, { triple = "x86_64-apple-darwin" }]
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = []
+
+[licenses]
+version = 2
+# Confidence threshold: 0.9 is cargo-deny's default; lower only if CI is noisy.
+confidence-threshold = 0.9
+# Licences kiegen's own MIT/Apache-2.0 grant permits in the distributed binary.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "OpenSSL",
+    "NCSA",
+]
+
+# Weak/file-level copyleft present transitively via Tauri itself (dom_query pulls
+# cssparser + selectors; dirs pulls option-ext). MPL-2.0 is file-scoped: we do not modify
+# those crates, and it does not relicense kiegen. Listed explicitly so it is a decision
+# rather than an accident — remove these and CI fails until the dependency is replaced.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cssparser" },
+    { allow = ["MPL-2.0"], crate = "cssparser-macros" },
+    { allow = ["MPL-2.0"], crate = "dtoa-short" },
+    { allow = ["MPL-2.0"], crate = "selectors" },
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+# Anything here fails the build outright.
+[[licenses.deny]]
+licenses = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "SSPL-1.0", "CPL-1.0", "OSL-3.0", "EUPL-1.2"]
+
+[bans]
+multiple-versions = "allow"     # a Tauri app legitimately carries several of several crates
+wildcards = "deny"
+deny = [
+    # The published kokoro-tts crate compiles espeak-ng-derived C unconditionally.
+    # ban it so it cannot creep back in once the Kokoro engine lands (v0.5).
+    { name = "kokoro-tts" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
