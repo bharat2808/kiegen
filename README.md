@@ -32,8 +32,33 @@ often expose no usable Accessibility tree.
 | Stop | `Cmd+Shift+X` |
 | Open settings | tray icon → Settings… |
 
-Both shortcuts are rebindable. Click the field, press the combo; a modifier is required
+Both shortcuts are rebindable. Click **Record…**, press the combo; a modifier is required
 so a bare key cannot be swallowed system-wide.
+
+## Picking a voice
+
+**Voice** opens on your system language and lists only that language's voices. Each row has
+a play button to audition it before you commit, and the chosen one is marked *Default*.
+
+Two things macOS makes awkward, handled up front:
+
+- **There may be no voice for your exact locale.** Canadian English has none, so kiegen
+  falls back to the closest language family, says which one it used, and puts the other
+  regions (UK, Australia, Ireland, …) one click away.
+- **Novelty voices are hidden.** `say` lists Bells, Zarvox, Boing and friends alongside real
+  voices. They are sound effects, not speech, so they sit behind a "show 15 novelty voices"
+  button rather than in your face.
+
+Speed is a slider (80–500 wpm, 200 default) and previews immediately.
+
+## Design
+
+The settings panel mirrors the visual language of the local **freeflow-notes** app —
+AppKit's own metrics rather than web conventions:
+a 180 pt sidebar, cards of `controlBackgroundColor` at 50 % with a 6 % hairline and radius
+10, selection rows tinted with the accent colour, and AppKit point sizes for type. The
+mapping table at the top of `src/App.css` records each token against the SwiftUI construct
+it came from, so the two stay in step.
 
 ## Build from source
 
@@ -57,6 +82,7 @@ Accessibility com.kiegen.app` clears the stale entry so it reappears in the list
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml   # capture guard, shortcut parsing, voices
 ./scripts/check-licenses.sh                       # no copyleft in the dependency graph
+./scripts/preview.sh                              # settings UI in a browser (stubbed IPC)
 ```
 
 ## Licence

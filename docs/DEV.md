@@ -65,6 +65,27 @@ If nothing happens, check the four failure modes in order: permission (settings 
 secure input (password field focused — deliberately refused), no selection, and an app
 that exposes neither AX text nor copy.
 
+## Iterating on the UI without the app
+
+The settings panel is a WKWebView inside a menu-bar app, which is a slow loop to inspect.
+`scripts/preview.sh` builds the frontend, writes a harness page that stubs the Tauri IPC
+(`get_state`, `save_settings`, `preview_voice`) with **the real voice list from `say -v ?`
+and the real system language from `AppleLocale`**, and serves it:
+
+```bash
+./scripts/preview.sh          # → http://127.0.0.1:8777
+```
+
+Everything except the Rust round-trip behaves exactly as it does in the app, so it is the
+place to check layout, the voice browser and the shortcut recorder. Screenshots in
+`.preview/shots/` come from this harness.
+
+The design language is not invented here: `src/App.css` opens with a table mapping each
+colour and metric to the AppKit/SwiftUI construct it mirrors (card = `controlBackgroundColor`
+at 50 % with a 6 % hairline and radius 10; selection row = accent fill at 10 % with a 1.5 px
+accent stroke and radius 8; AppKit point sizes for the type scale). Change the token, not
+the call site.
+
 ## Layout
 
 ```
@@ -74,9 +95,24 @@ src-tauri/src/
   speech.rs      the `say` bootstrap engine (Kokoro replaces it in v0.5)
   shortcuts.rs   accelerator parsing, validation, registration
   config.rs      one JSON file in the app config dir
-src/App.tsx      settings panel (permission state, shortcut recorder, voice picker)
-scripts/         licence guard
+src/App.tsx      settings panel: General / Voice / Shortcuts / Capture panes
+src/App.css      design tokens + components (see the mapping table at the top)
+scripts/
+  check-licenses.sh   fails the build if GPL-family code enters the tree
+  preview.sh          browser preview of the settings UI
 ```
+
+## Voice browser
+
+`speech::system_language()` reads `AppleLocale` (falling back to `AppleLanguages[0]`, then
+`en_US`) so the Voice pane opens on the user's own language. There is frequently **no voice
+for the exact locale** — `en_CA` has none on macOS — so the pane falls back to the language
+family, largest first, says so, and offers the other regions as chips.
+
+`say -v ?` lists novelty voices (Bells, Zarvox, …) mixed in with speech. They are flagged in
+`speech.rs`, hidden by default, and revealed by one button: offering "Bells" as a reading
+voice is a trap. The `every_installed_voice_is_parsed` test guards the parser against
+silently dropping voices — it caught `ar_001`, the one voice whose region is numeric.
 
 ## Where the risk actually is
 
