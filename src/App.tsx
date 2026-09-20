@@ -618,7 +618,7 @@ export default function App() {
               </div>
             </Card>
 
-            <Card title="About" icon={Icon.info2()}>
+            <Card title="About" icon={Icon.box()}>
               <div className="card-note">Version 0.1.0 · MIT OR Apache-2.0</div>
               <div className="field">
                 <span className="field-label">Settings file</span>
@@ -751,7 +751,7 @@ export default function App() {
               </div>
             </Card>
 
-            <Card title="Speed" icon={Icon.command()}>
+            <Card title="Speed" icon={Icon.gauge()}>
               <div className="inline">
                 <input
                   type="range"
