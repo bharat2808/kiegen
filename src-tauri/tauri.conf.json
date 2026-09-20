@@ -14,8 +14,10 @@
       {
         "label": "main",
         "title": "kiegen settings",
-        "width": 620,
-        "height": 720,
+        "width": 780,
+        "height": 640,
+        "minWidth": 680,
+        "minHeight": 480,
         "resizable": true,
         "visible": false,
         "center": true

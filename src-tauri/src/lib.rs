@@ -63,6 +63,25 @@ struct UiState {
     secure_input: bool,
     speaking: bool,
     refused_shortcuts: Vec<String>,
+    /// `xx_YY` from the OS, so the voice browser can open on the user's own language.
+    system_language: String,
+    /// Shown in Settings so the file is findable without digging through Library.
+    config_path: String,
+}
+
+fn ui_state(app: &AppHandle, refused_shortcuts: Vec<String>) -> UiState {
+    let state = app.state::<AppState>();
+    let settings = state.settings.lock().unwrap().clone();
+    UiState {
+        settings,
+        voices: state.voices.clone(),
+        trusted: capture::is_trusted(),
+        secure_input: capture::secure_input_active(),
+        speaking: state.speaker.is_speaking(),
+        refused_shortcuts,
+        system_language: speech::system_language(),
+        config_path: config::settings_path(app).display().to_string(),
+    }
 }
 
 fn emit_status(app: &AppHandle, phase: Phase, message: Option<String>, chars: Option<usize>) {
@@ -152,16 +171,7 @@ fn show_settings(app: &AppHandle) {
 
 #[tauri::command]
 fn get_state(app: AppHandle) -> UiState {
-    let state = app.state::<AppState>();
-    let settings = state.settings.lock().unwrap().clone();
-    UiState {
-        settings,
-        voices: state.voices.clone(),
-        trusted: capture::is_trusted(),
-        secure_input: capture::secure_input_active(),
-        speaking: state.speaker.is_speaking(),
-        refused_shortcuts: Vec::new(),
-    }
+    ui_state(&app, Vec::new())
 }
 
 /// Persist, then re-apply shortcuts. Registration failures come back to the UI so it
@@ -172,16 +182,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<UiState, String> 
     config::save(&app, &settings)?;
     *app.state::<AppState>().settings.lock().unwrap() = settings.clone();
     let refused = shortcuts::apply(&app)?;
-
-    let state = app.state::<AppState>();
-    Ok(UiState {
-        settings,
-        voices: state.voices.clone(),
-        trusted: capture::is_trusted(),
-        secure_input: capture::secure_input_active(),
-        speaking: state.speaker.is_speaking(),
-        refused_shortcuts: refused,
-    })
+    Ok(ui_state(&app, refused))
 }
 
 /// Speak the current selection right now (the settings window's "try it" button).
@@ -193,6 +194,21 @@ fn speak_selection_now(app: AppHandle) {
 #[tauri::command]
 fn speak_text(app: AppHandle, text: String) {
     std::thread::spawn(move || speak_given(&app, text));
+}
+
+/// Audition a voice without committing to it. The voice browser previews rows this
+/// way, so clicking through the list never silently rewrites the saved setting.
+#[tauri::command]
+fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<String>) {
+    let sample =
+        text.unwrap_or_else(|| "This is how I sound when reading your selection.".to_string());
+    std::thread::spawn(move || {
+        let speaker = &app.state::<AppState>().speaker;
+        match speaker.speak(&sample, voice.as_deref(), rate) {
+            Ok(()) => emit_status(&app, Phase::Speaking, Some("preview".to_string()), None),
+            Err(error) => emit_status(&app, Phase::Error, Some(error), None),
+        }
+    });
 }
 
 #[tauri::command]
@@ -318,6 +334,7 @@ pub fn run() {
             save_settings,
             speak_selection_now,
             speak_text,
+            preview_voice,
             stop_speaking,
             open_settings_window,
             open_accessibility_settings,

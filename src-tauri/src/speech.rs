@@ -16,9 +16,80 @@ pub const SAY: &str = "/usr/bin/say";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Voice {
+    /// Exactly as `say -v ?` prints it — passed straight back to `say -v`.
     pub name: String,
-    /// e.g. `en_US`, or empty for novelty voices.
+    /// e.g. `en_US`.
     pub locale: String,
+    /// macOS novelty voices (Bells, Zarvox…) are sound effects, not speech. They are
+    /// listed for completeness but the UI hides them by default: offering "Bells" as a
+    /// reading voice is a trap.
+    pub novelty: bool,
+}
+
+/// The classic macOS novelty voices. Stable set, unchanged for years.
+const NOVELTY_VOICES: &[&str] = &[
+    "Albert",
+    "Bad News",
+    "Bahh",
+    "Bells",
+    "Boing",
+    "Bubbles",
+    "Cellos",
+    "Deranged",
+    "Good News",
+    "Hysterical",
+    "Jester",
+    "Organ",
+    "Superstar",
+    "Trinoids",
+    "Whisper",
+    "Wobble",
+    "Zarvox",
+];
+
+fn is_novelty(name: &str) -> bool {
+    let base = name.split(" (").next().unwrap_or(name).trim();
+    NOVELTY_VOICES.iter().any(|v| v.eq_ignore_ascii_case(base))
+}
+
+/// The user's language, as `xx_YY`, for defaulting the voice browser to something
+/// useful instead of dumping 184 voices in their lap.
+///
+/// `AppleLocale` is the region-aware answer (e.g. `en_CA`); `AppleLanguages[0]` is the
+/// preference order. Neither is guaranteed inside a bundled app, so this ends at
+/// `en_US` — which is what `say` itself falls back to.
+pub fn system_language() -> String {
+    if let Some(locale) = read_default("AppleLocale").and_then(|raw| normalize_locale(&raw)) {
+        return locale;
+    }
+    if let Some(list) = read_default("AppleLanguages") {
+        let first = list.split(',').next().unwrap_or("");
+        if let Some(locale) = normalize_locale(first) {
+            return locale;
+        }
+    }
+    "en_US".to_string()
+}
+
+fn read_default(key: &str) -> Option<String> {
+    let output = Command::new("/usr/bin/defaults")
+        .args(["read", "-g", key])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!raw.is_empty()).then_some(raw)
+}
+
+/// `en-CA` / `"en-CA"` / `en_CA` → `en_CA`. Anything unrecognisable → `None`.
+fn normalize_locale(raw: &str) -> Option<String> {
+    let cleaned = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '(' || c == ')' || c == ',' || c == ' ')
+        .replace('-', "_");
+    looks_like_locale(&cleaned).then_some(cleaned)
 }
 
 #[derive(Default)]
@@ -112,6 +183,7 @@ pub fn list_voices() -> Vec<Voice> {
             continue;
         }
         voices.push(Voice {
+            novelty: is_novelty(&name),
             name,
             locale: tokens[locale_idx].to_string(),
         });
@@ -123,15 +195,15 @@ pub fn list_voices() -> Vec<Voice> {
 }
 
 fn looks_like_locale(token: &str) -> bool {
-    // xx_YY (or xx-YY) — e.g. en_US, pt_BR, zh_CN
+    // xx_YY (or xx-YY) — e.g. en_US, pt_BR, zh_CN — plus the numeric world region,
+    // as in `ar_001` (Majed). Rejecting that form silently lost a voice.
     let mut parts = token.split(['_', '-']);
     let (Some(lang), Some(region), None) = (parts.next(), parts.next(), parts.next()) else {
         return false;
     };
-    lang.len() == 2
-        && region.len() == 2
-        && lang.chars().all(|c| c.is_ascii_lowercase())
-        && region.chars().all(|c| c.is_ascii_uppercase())
+    let region_ok = (region.len() == 2 && region.chars().all(|c| c.is_ascii_uppercase()))
+        || (region.len() == 3 && region.chars().all(|c| c.is_ascii_digit()));
+    lang.len() == 2 && lang.chars().all(|c| c.is_ascii_lowercase()) && region_ok
 }
 
 #[cfg(test)]
@@ -142,8 +214,29 @@ mod tests {
     fn parses_locale_tokens() {
         assert!(looks_like_locale("en_US"));
         assert!(looks_like_locale("pt-BR"));
+        // `say -v ?` lists Majed as ar_001 — the one voice with a numeric region.
+        assert!(looks_like_locale("ar_001"));
         assert!(!looks_like_locale("en"));
         assert!(!looks_like_locale("Hello!"));
+        assert!(!looks_like_locale("en_0"));
+        assert!(!looks_like_locale("en_0001"));
+    }
+
+    /// The list must not quietly lose voices to the locale parser. 184 on macOS 26;
+    /// assert a floor rather than an exact number so a trimmed system still passes.
+    #[test]
+    fn every_installed_voice_is_parsed() {
+        let listed = String::from_utf8_lossy(
+            &Command::new(SAY)
+                .args(["-v", "?"])
+                .output()
+                .expect("say -v ?")
+                .stdout,
+        )
+        .lines()
+        .filter(|line| line.contains('#'))
+        .count();
+        assert_eq!(list_voices().len(), listed);
     }
 
     #[test]
@@ -151,5 +244,28 @@ mod tests {
         for voice in list_voices() {
             assert!(!voice.name.is_empty());
         }
+    }
+
+    #[test]
+    fn novelty_voices_are_flagged_and_real_ones_are_not() {
+        assert!(is_novelty("Bells"));
+        assert!(is_novelty("Bad News"));
+        // Newer voices carry a parenthetical language suffix; match on the base name.
+        assert!(is_novelty("Wobble (English (US))"));
+        assert!(!is_novelty("Samantha"));
+        assert!(!is_novelty("Eddy (English (US))"));
+        assert!(!is_novelty("Ting-Ting"));
+    }
+
+    #[test]
+    fn system_language_normalises_to_underscore_form() {
+        let language = system_language();
+        assert!(
+            looks_like_locale(&language),
+            "unexpected system language: {language}"
+        );
+        assert_eq!(normalize_locale("en-CA"), Some("en_CA".to_string()));
+        assert_eq!(normalize_locale("\"en-US\""), Some("en_US".to_string()));
+        assert_eq!(normalize_locale("nonsense"), None);
     }
 }
