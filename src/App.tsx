@@ -420,6 +420,9 @@ function Note({
 
 export default function App() {
   const [state, setState] = useState<UiState | null>(null);
+  // The last word from an espeak-ng install attempt. Kept until the next attempt rather
+  // than timed out, because the message is the only answer the user gets.
+  const [espeakMessage, setEspeakMessage] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("general");
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const [error, setError] = useState<string | null>(null);
@@ -448,12 +451,20 @@ export default function App() {
       setInstall(event.payload);
       if (event.payload.phase !== "downloading") void refresh();
     });
+    // Installing the extra back end is the user's own package manager running, so its
+    // outcome is reported rather than assumed, and the catalogue is re-read to pick up the
+    // voices it unlocks.
+    const unespeak = listen<string>("kiegen:espeak", (event) => {
+      setEspeakMessage(event.payload);
+      void refresh();
+    });
     // Permission is granted outside the app, and speech ends on its own: poll rather
     // than pretend we can observe either.
     const poll = window.setInterval(() => void refresh(), 2000);
     return () => {
       void unlisten.then((off) => off());
       void uninstall.then((off) => off());
+      void unespeak.then((off) => off());
       window.clearInterval(poll);
     };
   }, [refresh]);
@@ -557,6 +568,12 @@ export default function App() {
     usable: engineVoices.filter((voice) => voice.unavailable === null).length,
     blocked: engineVoices.filter((voice) => voice.unavailable !== null).length,
   };
+
+  // The espeak-backed voices are the only locked ones a user can unlock with one click, so
+  // the pane offers exactly that — and offers nothing when there is nothing to unlock.
+  const espeakVoiceCount = engineVoices.filter((voice) =>
+    voice.unavailable?.includes("espeak-ng"),
+  ).length;
 
   /* Keyboard recording for the shortcut rows. */
   useEffect(() => {
@@ -984,6 +1001,25 @@ export default function App() {
                       : ""}
                   </span>
                 </div>
+
+                {espeakVoiceCount > 0 ? (
+                  <div className="field">
+                    <span className="field-label">espeak-ng</span>
+                    <span className="inline">
+                      <button className="plain" onClick={() => void invoke("install_espeak_ng")}>
+                        {Icon.download()} Add {espeakVoiceCount} voices
+                      </button>
+                    </span>
+                  </div>
+                ) : null}
+
+                {espeakMessage ? (
+                  <Note kind="secondary" icon={Icon.info()}>
+                    <span className="truncate" title={espeakMessage}>
+                      {espeakMessage}
+                    </span>
+                  </Note>
+                ) : null}
 
                 <div className="voice-list">
                   {[...engineVoicesByLanguage.entries()].map(([groupLanguage, list]) => (

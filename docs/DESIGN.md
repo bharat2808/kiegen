@@ -201,6 +201,37 @@ Verified in `hexgrad/kokoro/kokoro/pipeline.py` — language routing is not unif
 
 So the model supports 8 languages and 54 voices, but **5 of the 8 have no non-espeak text front-end** in the reference implementation. The "50+ languages" figure that circulates comes from espeak-ng's phoneme inventory — it is the same dependency, renamed. Choosing "no espeak-ng" means English + Mandarin (+ Japanese if you build or port a Rust G2P), full stop.
 
+#### The espeak path, as built and as measured
+
+espeak-ng is reached the only way it can be. `src/espeak.rs` finds the user's own install (`KIEGEN_ESPEAK_NG`, then an app-managed directory, then the Homebrew prefixes, then `PATH`) and runs **one subprocess per text chunk**, reading IPA from stdout. Nothing links `libespeak-ng`, and nothing is downloaded into the app: the pane's *Add N voices* button asks the user's own package manager (`brew install espeak-ng`) to install it, and with no package manager it opens upstream's install page rather than fetching a copy — because fetching one would make kiegen a distributor of GPL code.
+
+A relocated copy is not a workable fallback, and this was measured rather than assumed: a Homebrew **bottle will not run outside its prefix**. The binary is linked against placeholders Homebrew rewrites only at install time:
+
+```
+@@HOMEBREW_CELLAR@@/espeak-ng/1.52.0/lib/libespeak-ng.1.dylib
+@@HOMEBREW_PREFIX@@/opt/pcaudiolib/lib/libpcaudio.0.dylib
+```
+
+so "the app keeps its own copy" would mean reproducing Homebrew's placeholder rewriting for the binary *and* its dylib *and* fetching `pcaudiolib` as a second bottle. Using the install in place sidesteps all of it — and it is the licence-cleaner answer anyway.
+
+Three upstream behaviours must be reproduced or the audio is quietly wrong. Each was read out of upstream's source and then confirmed against a real run, not inferred:
+
+| Behaviour | Why the obvious subprocess gets it wrong |
+|---|---|
+| `--tie=^` | espeak writes a tie between the halves of one phoneme. phonemizer asks for `͡` (U+0361) and *rewrites* it to the caller's tie; misaki passes `^` and writes its table against `t^ʃ`→`ʧ`. A plain `--ipa` yields `tʃ` — matching nothing, so every affricate and diphthong reaches the model as characters it was never trained on. Confirmed by running both spellings. |
+| punctuation chunking | `preserve_punctuation=True` is **not** an espeak setting. phonemizer splits the line at the marks, phonemizes the bare chunks, and re-inserts the marks by position — in Python. No CLI flag produces this, so `Punctuation.preserve`/`restore` are ported from **phonemizer-fork 3.3.2 as installed**, not from master: master added a decimal-separator exception this version does not have, and splitting `19,99` is a difference you can hear. |
+| bracket shuffle | misaki swaps `«»`→curly quotes and `()`→`«»` before phonemizing, and back afterwards, so parentheses travel through the punctuation machinery above instead of being read as espeak clause markers. It is **not** symmetric: an `«` in the source leaves as `“`, because the reverse mapping only covers the brackets the shuffle itself introduced. |
+
+**Measured parity against upstream's own espeak path** — `misaki.espeak.EspeakG2P` driven through phonemizer, pointed at the same Homebrew 1.52.0 library so both sides run the same build, over a 92-line corpus in all five languages:
+
+> **91/92 lines byte-for-byte identical (98.9%)**
+
+The corpus covers accented text, `¿¡`/`«»`/`;`, numbers as digits, and a decimal comma. The harness lives in `~/.hermes/cache/scratch/espeak_parity/` (`corpus.tsv`, `oracle.py`, `compare.py`, `probe.py`); it compares codepoint-by-codepoint and reports the first divergence, because a systematic off-by-one-character reads very differently from scattered noise.
+
+The one line that differs is Portuguese `está` in final position: upstream's library path (`espeak_TextToPhonemes`, no synthesis) gives it secondary stress — `estˌa` — where the CLI's synthesis path gives `estˈa`. It is **not** state carry-over across calls, not call ordering, not the voice, and not a missing flag: every CLI spelling tried returns `estˈa`, including `--punct`, `-x`, `--stdout`, `--stdin` and several utterances in one process. It is also not general — `café`, `sofá`, `você`, `avô`, `Pará`, `Aracaju`, and pt-BR `está` in *medial* position all match exactly. So the price of using the binary instead of the library is one stress mark on one word, and it is inherent to the arm's-length boundary rather than a bug with a flag-shaped fix. If it ever needs fixing, the mechanism is a pronunciation override (`~/.config/kiegen/pronounce.json`), not another flag.
+
+**What the catalogue does with it.** An espeak-backed voice is listed but not selectable until espeak-ng is found, and the reason names both the dependency and the licence (`Needs espeak-ng (GPL-3.0)`), so the state is never a mystery or a silent failure. Installing it flips all 13 voices usable without a restart, and adds their 13 style tables — ~6.8 MB — to the next download, because `kokoro_plan` uses the same availability rule the catalogue shows. Japanese and Mandarin stay unavailable in both states: no install fixes them, and the copy says so.
+
 ### `kokoro-tts` is not the clean build it looks like
 
 The crate is Apache-2.0, but `build.rs` is:

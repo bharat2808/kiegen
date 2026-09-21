@@ -147,12 +147,19 @@ const KOKORO_VOICE_IDS: &[&str] = &[
 /// where `e`, `f`, `h`, `i`, `p` are commented `# espeak-ng`.
 ///
 /// That column is the whole reason this table exists: espeak-ng is GPL-3.0 and cannot
-/// enter this repo, so every voice whose front end is espeak is offered as
-/// present-but-unavailable rather than silently dropped or silently broken. The reason
-/// string is kept short on purpose — it is rendered in a list row, not a dialog.
+/// enter this repo, so every voice whose front end is espeak carries the espeak voice name
+/// it needs and is offered as present-but-unavailable until the user installs espeak-ng
+/// themselves. The reason string is kept short on purpose — it is rendered in a list row,
+/// not a dialog.
 struct Family {
     letter: &'static str,
     language: &'static str,
+    /// The espeak-ng voice this family's front end must call, when the front end *is*
+    /// espeak. It doubles as the flag for "this family is reachable iff espeak-ng is
+    /// installed", which is why there is no separate boolean. The strings are Kokoro's own
+    /// `LANG_CODES` values, passed straight through to espeak.
+    espeak: Option<&'static str>,
+    /// Set when no front end exists at all, so no user action could enable the voice.
     blocked: Option<&'static str>,
 }
 
@@ -160,46 +167,55 @@ const KOKORO_FAMILIES: &[Family] = &[
     Family {
         letter: "a",
         language: "American English",
+        espeak: None,
         blocked: None,
     },
     Family {
         letter: "b",
         language: "British English",
+        espeak: None,
         blocked: None,
     },
     Family {
         letter: "e",
         language: "Spanish",
-        blocked: Some("Needs espeak-ng (GPL-3.0)"),
+        espeak: Some("es"),
+        blocked: None,
     },
     Family {
         letter: "f",
         language: "French",
-        blocked: Some("Needs espeak-ng (GPL-3.0)"),
+        espeak: Some("fr-fr"),
+        blocked: None,
     },
     Family {
         letter: "h",
         language: "Hindi",
-        blocked: Some("Needs espeak-ng (GPL-3.0)"),
+        espeak: Some("hi"),
+        blocked: None,
     },
     Family {
         letter: "i",
         language: "Italian",
-        blocked: Some("Needs espeak-ng (GPL-3.0)"),
+        espeak: Some("it"),
+        blocked: None,
     },
     Family {
         letter: "p",
         language: "Portuguese (Brazil)",
-        blocked: Some("Needs espeak-ng (GPL-3.0)"),
+        espeak: Some("pt-br"),
+        blocked: None,
     },
     Family {
         letter: "j",
         language: "Japanese",
+        espeak: None,
         blocked: Some("Needs a Japanese front end"),
     },
     Family {
         letter: "z",
         language: "Mandarin Chinese",
+        espeak: None,
         blocked: Some("Needs a Chinese front end"),
     },
 ];
@@ -237,7 +253,10 @@ fn kokoro_gender(id: &str) -> Option<&'static str> {
     }
 }
 
-pub fn kokoro_voices() -> Vec<EngineVoice> {
+/// `espeak_ready` says whether an espeak-ng install was found. It is injected rather than
+/// probed here so both states are assertable on any machine: the catalogue is what a user
+/// reasons about when a voice is greyed out, so "why" has to be testable either way.
+pub fn kokoro_voices(espeak_ready: bool) -> Vec<EngineVoice> {
     KOKORO_VOICE_IDS
         .iter()
         .filter_map(|id| {
@@ -246,11 +265,23 @@ pub fn kokoro_voices() -> Vec<EngineVoice> {
                 id: (*id).to_string(),
                 label: kokoro_label(id),
                 language: family.language.to_string(),
-                unavailable: family.blocked.map(str::to_string),
+                // An espeak-backed family is unusable until the user installs espeak-ng —
+                // a condition they can fix, unlike `blocked`, which no install resolves.
+                unavailable: match (family.espeak, espeak_ready) {
+                    (Some(_), false) => Some("Needs espeak-ng (GPL-3.0)".to_string()),
+                    _ => family.blocked.map(str::to_string),
+                },
                 note: kokoro_gender(id).map(str::to_string),
             })
         })
         .collect()
+}
+
+/// The espeak-ng voice a Kokoro voice id needs, or `None` when it uses the built-in English
+/// front end. The synthesis path branches on this, and it is the single place that decision
+/// is made — a voice is espeak-backed here or it is not, everywhere.
+pub fn espeak_language_for(voice: &str) -> Option<&'static str> {
+    family_for(voice)?.espeak
 }
 
 // ───────────────────────────────── Qwen ─────────────────────────────────
@@ -317,7 +348,7 @@ pub fn chatterbox_voices() -> Vec<EngineVoice> {
 /// `engine_ready` is injected rather than probed here so this module stays testable
 /// without a 2 GB model on disk.
 pub fn catalog(settings: &Settings) -> Vec<EngineInfo> {
-    let kokoro = kokoro_voices();
+    let kokoro = kokoro_voices(crate::engine_paths::espeak_ng().is_some());
     let qwen = qwen_voices();
     let chatterbox = chatterbox_voices();
 
@@ -425,7 +456,7 @@ mod tests {
     /// dropped, and the count in the UI copy is wrong.
     #[test]
     fn kokoro_has_the_documented_54_voices() {
-        assert_eq!(kokoro_voices().len(), 54);
+        assert_eq!(kokoro_voices(false).len(), 54);
     }
 
     /// The stray `voices/af.bin` has 512 style rows where real voices have 510, and is not
@@ -433,14 +464,14 @@ mod tests {
     #[test]
     fn the_512_row_stray_is_not_offered_as_a_voice() {
         assert!(!KOKORO_VOICE_IDS.contains(&"af"));
-        assert!(kokoro_voices().iter().all(|voice| voice.id != "af"));
+        assert!(kokoro_voices(false).iter().all(|voice| voice.id != "af"));
     }
 
     /// espeak-ng is GPL-3.0. Every voice whose front end is espeak must come back
     /// unavailable with a reason — never silently listed as usable.
     #[test]
-    fn espeak_backed_voices_are_offered_but_marked_unusable() {
-        let voices = kokoro_voices();
+    fn espeak_backed_voices_are_offered_but_marked_unusable_without_espeak() {
+        let voices = kokoro_voices(false);
         for id in ["ef_dora", "ff_siwis", "hf_alpha", "if_sara", "pf_dora"] {
             let voice = voices.iter().find(|v| v.id == id).expect("voice listed");
             let why = voice.unavailable.as_deref().unwrap_or("usable");
@@ -449,12 +480,55 @@ mod tests {
         }
     }
 
+    /// The other half of the same rule: once espeak-ng *is* present, those voices have to
+    /// become usable, and the ones with no front end at all must stay unusable. A catalogue
+    /// that only ever greys things out would hide a working install.
+    #[test]
+    fn installing_espeak_ng_makes_exactly_the_espeak_voices_usable() {
+        let voices = kokoro_voices(true);
+        for id in ["ef_dora", "ff_siwis", "hf_alpha", "if_sara", "pf_dora"] {
+            let voice = voices.iter().find(|v| v.id == id).expect("voice listed");
+            assert!(
+                voice.unavailable.is_none(),
+                "{id} should be usable once espeak-ng is present, said: {:?}",
+                voice.unavailable
+            );
+        }
+        // Japanese and Mandarin have no front end at all, so a working espeak-ng must not
+        // pretend to fix them.
+        for id in ["jf_alpha", "zf_xiaobei"] {
+            let voice = voices.iter().find(|v| v.id == id).expect("voice listed");
+            assert!(
+                voice.unavailable.is_some(),
+                "{id} has no front end and must stay unavailable"
+            );
+        }
+    }
+
+    /// Every espeak-backed voice must name the espeak voice it needs, because that string is
+    /// what the synthesis path hands to the subprocess.
+    #[test]
+    fn espeak_backed_voices_carry_their_espeak_voice() {
+        for (id, expected) in [
+            ("ef_dora", "es"),
+            ("ff_siwis", "fr-fr"),
+            ("hf_alpha", "hi"),
+            ("if_sara", "it"),
+            ("pf_dora", "pt-br"),
+        ] {
+            assert_eq!(espeak_language_for(id), Some(expected), "{id}");
+        }
+        // English uses the front end in this repo, and Japanese/Mandarin have none.
+        assert_eq!(espeak_language_for("af_heart"), None);
+        assert_eq!(espeak_language_for("jf_alpha"), None);
+    }
+
     /// The English voices are the ones this project can actually make work, so they must not
     /// be accidentally excluded. 20 American + 8 British = 28; an earlier count of 29
     /// included the 512-row stray.
     #[test]
     fn the_28_english_voices_are_all_usable() {
-        let voices = kokoro_voices();
+        let voices = kokoro_voices(false);
         let english: Vec<_> = voices
             .iter()
             .filter(|v| v.language.ends_with("English"))
@@ -479,12 +553,12 @@ mod tests {
 
     #[test]
     fn every_voice_belongs_to_a_known_language_family() {
-        for voice in kokoro_voices() {
+        for voice in kokoro_voices(false) {
             let family = family_for(&voice.id).expect("family");
             assert_eq!(voice.language, family.language, "for {}", voice.id);
         }
         // No voice may be silently dropped by the family lookup.
-        assert_eq!(kokoro_voices().len(), KOKORO_VOICE_IDS.len());
+        assert_eq!(kokoro_voices(false).len(), KOKORO_VOICE_IDS.len());
     }
 
     #[test]

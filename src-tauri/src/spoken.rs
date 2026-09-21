@@ -193,7 +193,19 @@ impl Spoken {
         text: &str,
     ) -> Result<(Vec<f32>, usize, Vec<char>), String> {
         let voice = settings.kokoro.voice.clone();
-        let phonemes = self.phonemize(dir, text)?;
+        // An espeak-backed voice has no front end in this repo to fall back on: its phonemes
+        // exist only via espeak-ng, which is GPL-3.0 and therefore never bundled. If the
+        // install has gone missing, say so plainly rather than synthesising from an English
+        // front end and producing confident nonsense.
+        let phonemes = match crate::engines::espeak_language_for(&voice) {
+            Some(language) => {
+                let espeak = crate::espeak::EspeakNg::detect().ok_or_else(|| {
+                    format!("the voice {voice} needs espeak-ng, which is not installed")
+                })?;
+                espeak.phonemize(text, language)?
+            }
+            None => self.phonemize(dir, text)?,
+        };
         if phonemes.trim().is_empty() {
             return Err("nothing to say: that text produced no phonemes".to_string());
         }

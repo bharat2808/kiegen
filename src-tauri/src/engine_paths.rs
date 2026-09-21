@@ -23,6 +23,9 @@ pub const LEXICON_SILVER_FILE: &str = "lexicon/us_silver.json";
 /// Env override, used by the verification harnesses to point at a scratch tree.
 const MODELS_ENV: &str = "KIEGEN_MODELS_DIR";
 const SIDECAR_PYTHON_ENV: &str = "KIEGEN_SIDECAR_PYTHON";
+/// Points at an `espeak-ng` binary directly. Exists so a test (or a user with an unusual
+/// install) can name the binary without the app guessing.
+const ESPEAK_ENV: &str = "KIEGEN_ESPEAK_NG";
 
 /// `~/Library/Application Support/kiegen` on macOS, `$XDG_DATA_HOME/kiegen` elsewhere.
 /// Resolved from the environment rather than Tauri's `app_data_dir` so it stays testable
@@ -74,6 +77,69 @@ fn kokoro_installed_at(dir: &Path) -> bool {
         }),
         Err(_) => false,
     }
+}
+
+/// Is an `espeak-ng` binary present that the app may *use*?
+///
+/// espeak-ng is **GPL-3.0**. It is never bundled, linked or vendored — this only ever looks
+/// for one the user installed, and every use is a subprocess whose stdout is read. That
+/// keeps kiegen permissively licensed while still reaching the five Kokoro languages whose
+/// only front end is espeak. See docs/DESIGN.md §5.
+pub fn espeak_ng() -> Option<PathBuf> {
+    // 1. Explicit. A test harness points here, and so can a user with a peculiar install.
+    if let Ok(explicit) = std::env::var(ESPEAK_ENV) {
+        let candidate = PathBuf::from(explicit);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // 2. An arm's-length copy the app manages, if the user put one there. Nothing in the
+    //    app downloads into this directory: it exists so "install it next to the app" is
+    //    possible without editing PATH.
+    if let Some(dir) = app_support_dir() {
+        let managed = dir.join("runtime/espeak-ng/bin/espeak-ng");
+        if managed.is_file() {
+            return Some(managed);
+        }
+    }
+
+    // 3. The usual package-manager Linux/macOS prefixes, where the user's own install lives.
+    //    Homebrew on Apple Silicon, then the Intel prefix, then anything on PATH.
+    for prefix in ["/opt/homebrew", "/usr/local", "/usr"] {
+        let candidate = Path::new(prefix).join("bin/espeak-ng");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = Path::new(dir).join("espeak-ng");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The `espeak-ng-data` directory that goes with a given binary, when it can be inferred.
+///
+/// A relocated espeak-ng needs `ESPEAK_DATA_PATH` or it fails at startup with a message
+/// about voices rather than anything actionable, so the sibling `share/` directory is
+/// passed explicitly whenever it exists.
+pub fn espeak_data_dir(binary: &Path) -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("ESPEAK_DATA_PATH") {
+        let candidate = PathBuf::from(explicit);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    // <prefix>/bin/espeak-ng -> <prefix>/share/espeak-ng-data
+    let prefix = binary.parent()?.parent()?;
+    let candidate = prefix.join("share/espeak-ng-data");
+    candidate.is_dir().then_some(candidate)
 }
 
 /// The interpreter to run the sidecar with, if one has been installed. Shared by every MLX

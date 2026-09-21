@@ -93,11 +93,21 @@ pub struct Entry {
 /// What Kokoro needs on disk: the graph, the phoneme tokenizer, and one style table per
 /// *usable* voice.
 ///
-/// Only the 28 English voices are fetched. The other 26 cannot be used without a front end
-/// that cannot ship here — espeak-ng is GPL-3.0, and the Japanese and Chinese front ends
-/// are separate modules — so their style tables would be 13 MB of dead weight.
+/// Only the voices that can actually be used are fetched. The Japanese and Chinese front
+/// ends are separate modules that cannot ship here, so their style tables would be 13 MB of
+/// dead weight. The espeak-backed five languages are fetched **only when espeak-ng has been
+/// found** — the same availability rule the catalogue shows, so installing espeak-ng adds
+/// those voice tables to the next download rather than leaving them unreachable.
 pub fn kokoro_plan() -> Result<Vec<Entry>, String> {
-    let voices: Vec<String> = crate::engines::kokoro_voices()
+    kokoro_plan_with(crate::engine_paths::espeak_ng().is_some())
+}
+
+/// The same plan for a given espeak-ng state. Injected rather than probed so both plans are
+/// assertable on any machine: whether espeak-ng is installed decides whether 13 more voice
+/// tables belong in the download, and a test that could only ever observe one of those
+/// states would let a regression in the other one ship.
+pub fn kokoro_plan_with(espeak_ready: bool) -> Result<Vec<Entry>, String> {
+    let voices: Vec<String> = crate::engines::kokoro_voices(espeak_ready)
         .into_iter()
         .filter(|voice| voice.unavailable.is_none())
         .map(|voice| format!("voices/{}.bin", voice.id))
@@ -571,73 +581,100 @@ mod tests {
     }
 
     /// The plan must cover the graph, the tokenizer, and one table per *usable* voice —
-    /// not the 26 that cannot work here, and not the 512-row stray.
+    /// not the ones that cannot work here, and not the 512-row stray. Checked in both
+    /// espeak-ng states, because that is the only thing that moves the voice count.
     #[test]
     fn the_plan_covers_the_graph_tokenizer_and_usable_voices() {
-        let plan = kokoro_plan().expect("plan");
-        let paths: Vec<&str> = plan.iter().map(|entry| entry.path.as_str()).collect();
-        assert!(paths.contains(&"onnx/model.onnx"));
-        assert!(paths.contains(&"tokenizer.json"));
+        for (espeak_ready, expected_voices) in [(false, 28), (true, 41)] {
+            let plan = kokoro_plan_with(espeak_ready).expect("plan");
+            let paths: Vec<&str> = plan.iter().map(|entry| entry.path.as_str()).collect();
+            assert!(paths.contains(&"onnx/model.onnx"));
+            assert!(paths.contains(&"tokenizer.json"));
 
-        let voices = paths
-            .iter()
-            .filter(|path| path.starts_with("voices/"))
-            .count();
-        assert_eq!(voices, 28, "one style table per usable voice");
-        assert!(paths.contains(&"voices/af_heart.bin"));
-        assert!(paths.contains(&"voices/af_sky.bin"));
-        // The stray and the espeak-backed voices must stay out of the download.
-        assert!(!paths.contains(&"voices/af.bin"), "512-row stray");
-        assert!(!paths.contains(&"voices/ef_dora.bin"), "espeak-backed");
-        assert!(
-            !paths.contains(&"voices/zf_xiaoxiao.bin"),
-            "needs a Chinese front end"
-        );
+            let voices = paths
+                .iter()
+                .filter(|path| path.starts_with("voices/"))
+                .count();
+            assert_eq!(
+                voices, expected_voices,
+                "one style table per usable voice (espeak_ready={espeak_ready})"
+            );
+            assert!(paths.contains(&"voices/af_heart.bin"));
+            assert!(paths.contains(&"voices/af_sky.bin"));
+            // The stray and the Japanese/Chinese voices must stay out of the download in
+            // both states.
+            assert!(!paths.contains(&"voices/af.bin"), "512-row stray");
+            assert!(
+                !paths.contains(&"voices/zf_xiaoxiao.bin"),
+                "needs a Chinese front end"
+            );
+            // The espeak-backed voices follow the install: absent without it, present with.
+            assert_eq!(
+                paths.contains(&"voices/ef_dora.bin"),
+                espeak_ready,
+                "espeak-backed voices should follow the espeak-ng install"
+            );
 
-        assert_eq!(
-            plan.len(),
-            32,
-            "28 voices + graph + tokenizer + 2 dictionaries"
-        );
+            assert_eq!(
+                plan.len(),
+                expected_voices + 4,
+                "voices + graph + tokenizer + 2 dictionaries"
+            );
 
-        // The dictionaries are part of the install: an engine without them cannot read a
-        // word. They are also the only entries that carry their own hash, because the raw
-        // host they come from advertises no content digest.
-        let hashed: Vec<&str> = plan
-            .iter()
-            .filter(|entry| entry.sha256.is_some())
-            .map(|entry| entry.path.as_str())
-            .collect();
-        assert_eq!(
-            hashed,
-            vec!["lexicon/us_gold.json", "lexicon/us_silver.json"],
-            "the dictionaries must be in the plan, and they are the entries pinned by hash"
-        );
+            // The dictionaries are part of the install: an engine without them cannot read a
+            // word. They are also the only entries that carry their own hash, because the raw
+            // host they come from advertises no content digest.
+            let hashed: Vec<&str> = plan
+                .iter()
+                .filter(|entry| entry.sha256.is_some())
+                .map(|entry| entry.path.as_str())
+                .collect();
+            assert_eq!(
+                hashed,
+                vec!["lexicon/us_gold.json", "lexicon/us_silver.json"],
+                "the dictionaries must be in the plan, and they are the entries pinned by hash"
+            );
 
-        // Cheap-first ordering: the graph is 325 MB of the 340 MB, so nothing else should
-        // have to wait behind it. A failure on a 3.5 kB file must fail fast.
-        assert_eq!(
-            plan.first().map(|entry| entry.path.as_str()),
-            Some("tokenizer.json"),
-            "the smallest required file should be fetched first"
-        );
-        assert_eq!(
-            plan.last().map(|entry| entry.path.as_str()),
-            Some("onnx/model.onnx"),
-            "the 325 MB graph should be fetched last"
-        );
+            // Cheap-first ordering: the graph is 325 MB of the 340 MB, so nothing else should
+            // have to wait behind it. A failure on a 3.5 kB file must fail fast.
+            assert_eq!(
+                plan.first().map(|entry| entry.path.as_str()),
+                Some("tokenizer.json"),
+                "the smallest required file should be fetched first"
+            );
+            assert_eq!(
+                plan.last().map(|entry| entry.path.as_str()),
+                Some("onnx/model.onnx"),
+                "the 325 MB graph should be fetched last"
+            );
+        }
     }
 
     /// The byte total the UI shows is derived from the plan, so it cannot drift from the
-    /// work: 325.5 MB graph + 3.5 kB tokenizer + 28 x 522,240 + the two dictionaries.
+    /// work: 325.5 MB graph + 3.5 kB tokenizer + one 522,240-byte table per usable voice +
+    /// the two dictionaries. Asserted in both espeak-ng states, because the second one adds
+    /// 13 tables and a stale hardcoded figure would understate the download by ~6.8 MB.
     #[test]
     fn the_byte_total_matches_the_plan() {
         let lexicon: u64 = LEXICON_FILES.iter().map(|(_, bytes, _)| *bytes).sum();
-        let expected = KOKORO_GRAPH_BYTES + KOKORO_TOKENIZER_BYTES + 28 * VOICE_BYTES + lexicon;
+
+        let without = KOKORO_GRAPH_BYTES + KOKORO_TOKENIZER_BYTES + 28 * VOICE_BYTES + lexicon;
+        // 340,158,449 before the dictionaries joined the plan; the UI reads "346 MB", and
+        // that number comes from here rather than from this comment.
+        assert_eq!(without, 346_258_435);
+
+        let with = KOKORO_GRAPH_BYTES + KOKORO_TOKENIZER_BYTES + 41 * VOICE_BYTES + lexicon;
+        assert_eq!(
+            with, 353_047_555,
+            "13 more voice tables than the English-only plan"
+        );
+
+        // And the state the machine is actually in agrees with `kokoro_bytes()`.
+        let expected = match crate::engine_paths::espeak_ng() {
+            Some(_) => with,
+            None => without,
+        };
         assert_eq!(kokoro_bytes(), expected);
-        // 340,158,449 before the dictionaries joined the plan; the UI now reads "346 MB",
-        // and that number comes from here rather than from this comment.
-        assert_eq!(expected, 346_258_435);
     }
 
     /// A file already present at the right size must not be fetched again — this is what

@@ -9,6 +9,7 @@ pub mod config;
 pub mod download;
 pub mod engine_paths;
 pub mod engines;
+pub mod espeak;
 pub mod g2p;
 pub mod kokoro;
 pub mod lexicon;
@@ -413,6 +414,22 @@ fn install_engine(app: AppHandle, engine: config::Engine) {
     std::thread::spawn(move || install_engine_blocking(&app, engine));
 }
 
+/// Install espeak-ng — the extra back end for Kokoro's five non-English languages.
+///
+/// Threaded and event-reported rather than returning a value, because a package-manager run
+/// takes long enough that blocking the command would freeze the pane, and because the
+/// catalogue has to be re-read afterwards either way.
+#[tauri::command]
+fn install_espeak_ng(app: AppHandle) {
+    std::thread::spawn(move || {
+        let message = match espeak::install() {
+            Ok(message) => message,
+            Err(error) => error,
+        };
+        let _ = app.emit("kiegen:espeak", message);
+    });
+}
+
 #[tauri::command]
 fn open_settings_window(app: AppHandle) {
     show_settings(&app);
@@ -533,6 +550,7 @@ pub fn run() {
             preview_voice,
             stop_speaking,
             install_engine,
+            install_espeak_ng,
             open_settings_window,
             open_accessibility_settings,
             permission_status,
