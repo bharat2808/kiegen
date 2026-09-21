@@ -48,6 +48,27 @@ const KOKORO_COMMIT: &str = "1939ad2a8e416c0acfeecc08a694d14ef25f2231";
 const KOKORO_GRAPH_BYTES: u64 = 325_532_232;
 const KOKORO_TOKENIZER_BYTES: u64 = 3_497;
 
+/// The G2P dictionaries, without which Kokoro cannot read a word: the engine takes
+/// phonemes, and these are the tables that produce them.
+///
+/// Apache-2.0 string tables from `hexgrad/misaki`, pinned to a commit. Unlike the
+/// HuggingFace entries these carry their hash in the plan, because the raw host reports no
+/// content digest and both sizes here were confirmed against an independently fetched copy.
+const LEXICON_BASE: &str = "https://raw.githubusercontent.com/hexgrad/misaki";
+const LEXICON_COMMIT: &str = "fba1236595f2d2bf21d414ba6e57d25256afada3";
+const LEXICON_FILES: [(&str, u64, &str); 2] = [
+    (
+        "lexicon/us_gold.json",
+        3_000_469,
+        "dc414872a49a28ae6c141463d502fd945f3b2fde040484fdc47d00cc4612686f",
+    ),
+    (
+        "lexicon/us_silver.json",
+        3_099_517,
+        "de8f67be911bb6c659187b4a65fd966b6a30e56350e0f790d763210b053ac475",
+    ),
+];
+
 /// Every shipped voice style table measured 522,240 bytes (510 rows x 256 float32). The
 /// repo also carries `voices/af.bin` at 524,288 bytes — 512 rows, absent from Kokoro's
 /// documented voice list — which is exactly why it is offered nowhere.
@@ -61,6 +82,12 @@ pub struct Entry {
     /// Expected size, re-checked against the server before any byte is written.
     pub bytes: u64,
     pub url: String,
+    /// Content hash to verify once the bytes are on disk.
+    ///
+    /// HuggingFace supplies one in `x-linked-etag`, which is why this was not a field
+    /// before. GitHub's raw host supplies nothing, so an entry pinned only by revision would
+    /// land unverified — anything fetching from there has to carry its own hash.
+    pub sha256: Option<String>,
 }
 
 /// What Kokoro needs on disk: the graph, the phoneme tokenizer, and one style table per
@@ -79,21 +106,42 @@ pub fn kokoro_plan() -> Result<Vec<Entry>, String> {
         return Err("no usable Kokoro voices are defined".to_string());
     }
 
-    let mut files: Vec<(String, u64)> =
-        vec![("tokenizer.json".to_string(), KOKORO_TOKENIZER_BYTES)];
-    files.extend(voices.into_iter().map(|path| (path, VOICE_BYTES)));
-    // The graph is 325 MB of the 340 MB total, so it is fetched last: a failure on any of
-    // the small files must not have already cost a 325 MB download.
-    files.push(("onnx/model.onnx".to_string(), KOKORO_GRAPH_BYTES));
+    // Cheap first: the 3.5 kB tokenizer, then the 0.5 MB voice tables, then 6 MB of
+    // dictionaries, and the 325 MB graph last — so a failure on any of the small files
+    // fails fast instead of after the expensive download.
+    let mut plan: Vec<Entry> = vec![Entry {
+        path: "tokenizer.json".to_string(),
+        bytes: KOKORO_TOKENIZER_BYTES,
+        url: format!("{HF_BASE}/{KOKORO_REPO}/resolve/{KOKORO_COMMIT}/tokenizer.json"),
+        sha256: None,
+    }];
 
-    Ok(files
-        .into_iter()
-        .map(|(path, bytes)| Entry {
-            url: format!("{HF_BASE}/{KOKORO_REPO}/resolve/{KOKORO_COMMIT}/{path}"),
-            path,
+    plan.extend(voices.into_iter().map(|path| Entry {
+        url: format!("{HF_BASE}/{KOKORO_REPO}/resolve/{KOKORO_COMMIT}/{path}"),
+        path,
+        bytes: VOICE_BYTES,
+        sha256: None,
+    }));
+
+    // The dictionaries: 6 MB that turn a pile of weights into an engine that can read.
+    for (path, bytes, sha256) in LEXICON_FILES {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        plan.push(Entry {
+            path: path.to_string(),
             bytes,
-        })
-        .collect())
+            url: format!("{LEXICON_BASE}/{LEXICON_COMMIT}/misaki/data/{name}"),
+            sha256: Some(sha256.to_string()),
+        });
+    }
+
+    plan.push(Entry {
+        path: "onnx/model.onnx".to_string(),
+        bytes: KOKORO_GRAPH_BYTES,
+        url: format!("{HF_BASE}/{KOKORO_REPO}/resolve/{KOKORO_COMMIT}/onnx/model.onnx"),
+        sha256: None,
+    });
+
+    Ok(plan)
 }
 
 /// Total bytes `kokoro_plan` will fetch, derived from the plan itself so the figure the UI
@@ -186,8 +234,14 @@ fn sha_from_headers(headers: &ureq::http::HeaderMap) -> Option<String> {
 
 /// The size the server reports for a file, plus the sha256 it declares. Both come from
 /// headers, so this costs no body bytes beyond one byte in the fallback path.
+///
+/// Every request asks for `identity` encoding, because a server that gzips the response
+/// reports the *compressed* length in `Content-Length`: GitHub's raw host answers 737,890
+/// bytes for a 3,000,469-byte dictionary, so a size check against that figure rejects a file
+/// that is perfectly fine. Ranges are also meaningless over an encoded stream, and the hash
+/// taken at the end must be over the bytes as stored.
 pub fn probe(url: &str) -> Result<(u64, Option<String>), String> {
-    if let Ok(response) = ureq::head(url).call() {
+    if let Ok(response) = ureq::head(url).header("Accept-Encoding", "identity").call() {
         let headers = response.headers();
         if let Some(size) = linked_size(headers) {
             return Ok((size, sha_from_headers(headers)));
@@ -204,6 +258,7 @@ pub fn probe(url: &str) -> Result<(u64, Option<String>), String> {
     // full length in `Content-Range`, so the size check survives — and this is the only way
     // `tokenizer.json`, which the engine cannot start without, is fetched at all.
     let response = ureq::get(url)
+        .header("Accept-Encoding", "identity")
         .header("Range", "bytes=0-0")
         .call()
         .map_err(|error| format!("probe {url}: {error}"))?;
@@ -285,6 +340,7 @@ pub fn fetch(entry: &Entry, dest_dir: &Path, on_bytes: &mut dyn FnMut(u64)) -> R
                 }
             };
             let mut response = match ureq::get(&url)
+                .header("Accept-Encoding", "identity")
                 .header("Range", format!("bytes={start}-{end}"))
                 .call()
             {
@@ -362,7 +418,9 @@ pub fn fetch(entry: &Entry, dest_dir: &Path, on_bytes: &mut dyn FnMut(u64)) -> R
         ));
     }
 
-    if let Some(expected) = server_sha {
+    // Prefer the hash carried by the plan: it is the one whose value was established when
+    // the entry was written, and some hosts report no digest at all.
+    if let Some(expected) = entry.sha256.clone().or(server_sha) {
         let actual = sha256_of_file(&part)?;
         if actual != expected {
             let _ = fs::remove_file(&part);
@@ -490,17 +548,25 @@ mod tests {
     /// Every URL must name the pinned commit. A `/main/` URL would follow the repository
     /// forward, and these size checks would then start failing for unrelated reasons.
     #[test]
-    fn every_url_is_pinned_to_the_commit() {
+    fn every_url_is_pinned_to_a_commit() {
         let plan = kokoro_plan().expect("plan");
         assert!(!plan.is_empty());
         for entry in &plan {
+            // A pinned revision is 40 hex digits. The HuggingFace entries all share one
+            // commit and the dictionaries come from a different repository, so the
+            // assertion is "pinned", not "pinned to Kokoro's commit".
+            let pinned = entry
+                .url
+                .split('/')
+                .any(|part| part.len() == 40 && part.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(pinned, "{} is not pinned: {}", entry.path, entry.url);
+            assert!(!entry.url.contains("/main/"), "{}", entry.url);
             assert!(
-                entry.url.contains(KOKORO_COMMIT),
-                "{} is not pinned: {}",
+                entry.url.contains(&entry.path.replace("lexicon/", "")),
+                "{} does not appear in its own url: {}",
                 entry.path,
                 entry.url
             );
-            assert!(!entry.url.contains("/main/"), "{}", entry.url);
         }
     }
 
@@ -528,7 +594,25 @@ mod tests {
             "needs a Chinese front end"
         );
 
-        assert_eq!(plan.len(), 30, "28 voices + graph + tokenizer");
+        assert_eq!(
+            plan.len(),
+            32,
+            "28 voices + graph + tokenizer + 2 dictionaries"
+        );
+
+        // The dictionaries are part of the install: an engine without them cannot read a
+        // word. They are also the only entries that carry their own hash, because the raw
+        // host they come from advertises no content digest.
+        let hashed: Vec<&str> = plan
+            .iter()
+            .filter(|entry| entry.sha256.is_some())
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(
+            hashed,
+            vec!["lexicon/us_gold.json", "lexicon/us_silver.json"],
+            "the dictionaries must be in the plan, and they are the entries pinned by hash"
+        );
 
         // Cheap-first ordering: the graph is 325 MB of the 340 MB, so nothing else should
         // have to wait behind it. A failure on a 3.5 kB file must fail fast.
@@ -545,12 +629,15 @@ mod tests {
     }
 
     /// The byte total the UI shows is derived from the plan, so it cannot drift from the
-    /// work: 325.5 MB graph + 3.5 kB tokenizer + 28 x 522,240.
+    /// work: 325.5 MB graph + 3.5 kB tokenizer + 28 x 522,240 + the two dictionaries.
     #[test]
     fn the_byte_total_matches_the_plan() {
-        let expected = KOKORO_GRAPH_BYTES + KOKORO_TOKENIZER_BYTES + 28 * VOICE_BYTES;
+        let lexicon: u64 = LEXICON_FILES.iter().map(|(_, bytes, _)| *bytes).sum();
+        let expected = KOKORO_GRAPH_BYTES + KOKORO_TOKENIZER_BYTES + 28 * VOICE_BYTES + lexicon;
         assert_eq!(kokoro_bytes(), expected);
-        assert_eq!(expected, 340_158_449);
+        // 340,158,449 before the dictionaries joined the plan; the UI now reads "346 MB",
+        // and that number comes from here rather than from this comment.
+        assert_eq!(expected, 346_258_435);
     }
 
     /// A file already present at the right size must not be fetched again — this is what
@@ -565,6 +652,7 @@ mod tests {
             bytes: 3,
             // Deliberately unreachable: reaching the network here would be an error.
             url: "http://127.0.0.1:1/never".into(),
+            sha256: None,
         };
         fs::write(dir.join("onnx/model.onnx"), b"abc").unwrap();
         let mut calls = 0;

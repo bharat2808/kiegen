@@ -57,7 +57,7 @@ so the hotkey path is debuggable without a GUI.
 ### The install path is an integration test, and it is not run by default
 
 `tests/install.rs` is the only test that answers "does a download produce a working
-engine?". It fetches the real 340 MB, writes it to a real directory, then loads the graph in
+engine?". It fetches the real 346 MB, writes it to a real directory, then loads the graph in
 ONNX Runtime and synthesizes from a known phoneme string. It is `#[ignore]`d because it needs
 the network and a few hundred megabytes:
 
@@ -75,6 +75,97 @@ bugs that every unit test passed straight through, which is the argument for kee
   340 MB" after a *successful* install. Its unit tests agreed with it, because they wrote
   their fixtures to the same wrong path. A test that shares the implementation's mistake
   cannot catch it.
+- `Content-Length` is not the file's length when the response is compressed. GitHub's raw
+  host answers `content-encoding: gzip` with `content-length: 737890` for a 3,000,469-byte
+  dictionary, and `ureq` accepts gzip by default — so the pre-write size check compared a
+  compressed length against an uncompressed expectation and rejected a perfectly good file.
+  Every request now asks for `identity`: ranges over an encoded stream are meaningless
+  anyway, and the hash at the end has to be over the bytes as stored. This is the same family
+  as the redirect trap above — a length header that means something other than "the size of
+  the file".
+
+### The front end is measured against the reference, not eyeballed
+
+Kokoro does not take text. It takes phonemes, and the table it is scored against came from
+`misaki` — so `lexicon.rs` + `g2p.rs` are held to misaki's own output sentence by sentence
+rather than to a sample someone listened to. Two fixtures make that checkable offline:
+
+- `tests/fixtures/g2p_corpus.json` — 42 sentences with misaki's phonemes for each, including
+  the cases that break naive ports: numbers, money, years, acronyms, contractions, quotes,
+  hyphenated words, `$3.50` (cents), `555-1234`, unknown words.
+- `tests/fixtures/numbers_fixture.json` — `num2words` output, so number spelling is checked
+  against the library the reference calls rather than against intuition.
+
+```bash
+cargo test --test g2p_parity -- --ignored --nocapture   # needs the two 3 MB dictionaries
+cargo test --lib numbers::                              # number spelling, no download needed
+```
+
+Numbers are verified exhaustively (100,000 values, 100% agreement with `num2words`); the
+sentence corpus sits at **86.4% word agreement, 27/42 sentences byte-identical**, and the
+test fails below 85%. The residue is not a mystery:
+
+- **Most of it is the missing tagger.** "record" is `ɹˈɛkəɹd` as a noun and `ɹəkˈɔɹd` as a
+  verb; misaki reads spaCy's parse to decide, and a word list cannot. Same for the weak forms
+  of *a/the/to* and for tag-keyed dictionary variants. A tagger is a v1 question, not a bug
+  to paper over with a guess.
+- **Unknown words are handled better here, not worse.** misaki emits `❓` for "kiegen" and
+  even for "Kokoro"; Kokoro silently deletes anything marked that way, so the word vanishes
+  from the audio. This port spells the letters instead, which is audible and wrong in a
+  smaller way.
+- Cosmetic: the reference re-quotes with curly marks and drops a trailing period after an
+  abbreviation.
+
+The dictionary is **Apache-2.0** and pinned by commit, not by `main`. Both files are pure
+string tables (`us_gold.json` 90,201 entries, `us_silver.json` 93,361), so nothing copyleft
+crosses into the repo — which is the whole reason the front end is a port rather than a
+wrapper around `misaki` and its `espeak-ng` extra.
+
+### The shortcut is tested end to end, and the artifact is the proof
+
+`tests/speak.rs` is the one that answers the question the app exists for: **text in, audio
+out, through the same code the shortcut calls.** Not a copy of it, and not a mock. It needs
+a real install:
+
+```bash
+KIEGEN_MODELS_DIR=<a dir holding models/kokoro> \
+  cargo test --test speak -- --ignored --nocapture
+```
+
+To get that directory, install into somewhere durable first — `install.rs` accepts
+`KIEGEN_INSTALL_TEST_DIR` so a re-run reuses the install instead of re-downloading it:
+
+```bash
+KIEGEN_INSTALL_TEST_DIR=~/kiegen-models cargo test --test install -- --ignored --nocapture
+KIEGEN_MODELS_DIR=~/kiegen-models      cargo test --test speak   -- --ignored --nocapture
+```
+
+It asserts that the text reaches the engine as phonemes, that nothing was silently dropped,
+that the file on disk matches the duration the code reported, that the audio is not silence
+or a DC offset, that `speak` spawns a player and `stop` kills it, and that switching voice
+reloads rather than reusing the previous style table.
+
+**The assertions are not the proof.** The file it leaves behind is, and so is what a speech
+recogniser makes of it — the last two words are the ones a listener would have to catch:
+
+```bash
+whisper-cli -m ~/.cache/whisper/ggml-base.en.bin -otxt <the wav it printed>
+```
+
+The current run of that, on the text *"The quick brown fox jumps over the lazy dog. It costs
+$3.50 and the record was 21 degrees in November 2005."*:
+
+> Brown Fox jumps over the lazy dog. It costs $3.50, and the record was 21 degrees in November 2005.
+
+The recogniser normalises the spoken "three dollars and fifty cents" back into `$3.50`, so
+the money path is covered by the phoneme-level check in `g2p_parity.rs` rather than visible
+here. The missing "The quick" is the recogniser, not the audio: `ggml-base.en` drops the
+opening of short clips, and it did the same to the earlier install test.
+
+One trap worth knowing if you extend this test: it renders twice (once per voice). The second
+render must write to **its own path**. Reusing the first one silently overwrites the artifact
+underneath the assertions, and the file you transcribe afterwards is no longer the file the
+test measured.
 
 What no test can cover: the actual end-to-end capture, because it needs a real grant and
 a real selection in a real app. To check it by hand:
@@ -117,6 +208,14 @@ src-tauri/src/
   speech.rs      the `say` bootstrap engine (Kokoro replaces it in v0.5)
   shortcuts.rs   accelerator parsing, validation, registration
   config.rs      one JSON file in the app config dir
+  engines.rs     the engine catalogue: what can speak, and why one cannot
+  engine_paths.rs where each engine's files live, and whether they are there
+  download.rs    fetch + verify model weights (nothing is bundled or committed)
+  numbers.rs     number and money spelling, matching num2words
+  lexicon.rs     pronunciation lexicon (port of misaki's, Apache-2.0)
+  g2p.rs         text -> phonemes, without eSpeak
+  kokoro.rs      ONNX Runtime + the Kokoro graph
+  spoken.rs      which engine speaks, and the refusal when one cannot
 src/App.tsx      settings panel: General / Voice / Shortcuts / Capture panes
 src/App.css      design tokens + components (see the mapping table at the top)
 scripts/

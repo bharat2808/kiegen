@@ -23,7 +23,7 @@ DENY_ATOMS='GPL-1.0|GPL-2.0|GPL-3.0|AGPL-1.0|AGPL-3.0|SSPL-1.0|CPL-1.0|OSL-3.0|E
 # Warn only: weak or file-level copyleft, compatible with a permissive project.
 WARN_ATOMS='MPL-2.0|LGPL-2.1|LGPL-3.0|EPL-2.0|CDDL-1.0'
 # Every atom of an SPDX expression must appear here to count as clean.
-ALLOW_ATOMS='MIT|MIT-0|Apache-2.0|BSD-2-Clause|BSD-3-Clause|ISC|Unicode-3.0|Unicode-DFS-2016|Unlicense|Zlib|CC0-1.0|0BSD|BSL-1.0|LLVM-exception|OpenSSL|NCSA|CC-BY-4.0'
+ALLOW_ATOMS='MIT|MIT-0|Apache-2.0|BSD-2-Clause|BSD-3-Clause|ISC|Unicode-3.0|Unicode-DFS-2016|Unlicense|Zlib|CC0-1.0|0BSD|BSL-1.0|LLVM-exception|OpenSSL|NCSA|CC-BY-4.0|CDLA-Permissive-2.0'
 
 runtime_fail=0
 runtime_warn=0

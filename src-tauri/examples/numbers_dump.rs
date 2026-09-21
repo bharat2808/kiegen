@@ -15,7 +15,9 @@ fn main() {
     let raw = std::fs::read_to_string(&path).expect("read the fixture");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse the fixture");
 
-    let sections: [(&str, fn(u64) -> String); 3] = [
+    /// One section of the fixture: the name it is stored under, and how to render it.
+    type Section = (&'static str, fn(u64) -> String);
+    let sections: [Section; 3] = [
         ("cardinal", kiegen_lib::numbers::cardinal),
         ("ordinal", kiegen_lib::numbers::ordinal),
         ("year", kiegen_lib::numbers::year),

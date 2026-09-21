@@ -12,7 +12,7 @@
 //! the dictionary's letter names, which is audible and is exactly what the reference itself
 //! does for acronyms.
 
-use crate::lexicon::{apply_stress, Lexicon, Tag, TokenContext};
+use crate::lexicon::{Lexicon, Tag, TokenContext, CURRENCIES};
 
 /// Symbols that stand for words. The reference rewrites these before looking anything up.
 const SYMBOLS: [(&str, &str); 5] = [
@@ -23,11 +23,24 @@ const SYMBOLS: [(&str, &str); 5] = [
     ("=", "equals"),
 ];
 
-const CURRENCIES: [(&str, &str, &str); 3] = [
-    ("$", "dollar", "cent"),
-    ("£", "pound", "pence"),
-    ("€", "euro", "cent"),
-];
+/// Attaches each currency sign to the number that follows it. The sign itself is silent —
+/// the unit is spoken after the amount.
+fn attach_currency(tokens: &mut [Token]) {
+    let mut pending: Option<&'static str> = None;
+    for token in tokens.iter_mut() {
+        if token.tag == Tag::Punct {
+            if let Some((sign, _, _)) = CURRENCIES.iter().find(|(sign, _, _)| *sign == token.text) {
+                pending = Some(sign);
+                token.phonemes = Some(String::new());
+            }
+            continue;
+        }
+        // A sign only reaches a number if nothing else comes first.
+        if let Some(sign) = pending.take() {
+            token.currency = Some(sign);
+        }
+    }
+}
 
 pub struct G2p {
     lexicon: Lexicon,
@@ -45,6 +58,9 @@ struct Token {
     tag: Tag,
     phonemes: Option<String>,
     currency: Option<&'static str>,
+    /// Set when the phonemes came from a symbol expansion ("%" -> "percent"), which must be
+    /// separated from the number before it even though the source had no space there.
+    force_space: bool,
 }
 
 fn is_word_char(c: char) -> bool {
@@ -82,12 +98,17 @@ fn tokenize(text: &str) -> Vec<Token> {
                     word.push(next);
                     chars.next();
                 } else if next == '.' {
-                    // Only a decimal point stays inside a word: "3.5", not "dog."
+                    // A decimal point or an abbreviation dot stays inside the token: "3.5"
+                    // is one number and "U.S." is one word, but "dog." is a word followed by
+                    // a full stop, and the stop belongs to the punctuation.
                     let mut lookahead = chars.clone();
                     lookahead.next();
-                    if lookahead.peek().is_some_and(|c| c.is_ascii_digit())
-                        && word.chars().all(|c| c.is_ascii_digit() || c == ',')
-                    {
+                    let after = lookahead.peek().copied();
+                    let all_numeric = word.chars().all(|c| c.is_ascii_digit() || c == ',');
+                    let all_alpha = !word.is_empty() && word.chars().all(|c| c.is_alphabetic());
+                    let continues_number = after.is_some_and(|c| c.is_ascii_digit()) && all_numeric;
+                    let continues_word = after.is_some_and(|c| c.is_alphabetic()) && all_alpha;
+                    if continues_number || continues_word {
                         word.push(next);
                         chars.next();
                     } else {
@@ -97,14 +118,43 @@ fn tokenize(text: &str) -> Vec<Token> {
                     break;
                 }
             }
-            tokens.push(Token {
-                text: word,
-                trailing_space: false,
-                leading_space,
-                tag: Tag::None,
-                phonemes: None,
-                currency: None,
-            });
+            // A leading or trailing apostrophe is a quotation mark rather than part of the
+            // word: "'hello'" is the word in quotes, while "don't" keeps its own. Without
+            // this, a quoted word misses the dictionary and gets spelled out letter by
+            // letter.
+            let mut inner = word.as_str();
+            let mut leading = String::new();
+            let mut trailing = String::new();
+            while let Some(rest) = inner.strip_prefix('\'') {
+                leading.push('\'');
+                inner = rest;
+            }
+            while let Some(rest) = inner.strip_suffix('\'') {
+                trailing.push('\'');
+                inner = rest;
+            }
+            let had_leading = !leading.is_empty();
+            let mut push = |text: String, tag: Tag, leading_space: bool| {
+                tokens.push(Token {
+                    text,
+                    trailing_space: false,
+                    leading_space,
+                    tag,
+                    phonemes: None,
+                    currency: None,
+                    force_space: false,
+                });
+            };
+            if !leading.is_empty() {
+                push(leading, Tag::Punct, leading_space);
+            }
+            if !inner.is_empty() {
+                // The word keeps the space only if no quote already took it.
+                push(inner.to_string(), Tag::None, !had_leading && leading_space);
+            }
+            if !trailing.is_empty() {
+                push(trailing, Tag::Punct, false);
+            }
         } else {
             // Punctuation to its own token. Consecutive marks like "?!" stay together.
             let mut punct = String::from(c);
@@ -123,6 +173,7 @@ fn tokenize(text: &str) -> Vec<Token> {
                 tag: Tag::Punct,
                 phonemes: None,
                 currency: None,
+                force_space: false,
             });
         }
         at_start = false;
@@ -133,7 +184,7 @@ fn tokenize(text: &str) -> Vec<Token> {
 
 /// The tags this port can decide without a tagger. Everything else stays `None`, which the
 /// lexicon resolves to the dictionary's `DEFAULT` pronunciation.
-fn tag_for(text: &str, previous: Option<&Token>) -> Tag {
+fn tag_for(text: &str) -> Tag {
     if text
         .chars()
         .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
@@ -141,7 +192,7 @@ fn tag_for(text: &str, previous: Option<&Token>) -> Tag {
         return Tag::Cd;
     }
     match text {
-        "a" | "an" | "the" | "A" | "An" | "The" | "THE" | "A" | "AN" => Tag::Dt,
+        "a" | "an" | "the" | "A" | "An" | "The" | "THE" | "AN" => Tag::Dt,
         "I" => Tag::Prp,
         "to" | "To" | "TO" => Tag::To,
         "in" | "In" | "IN" | "vs" | "vs." | "Vs" | "VS" => Tag::In,
@@ -151,7 +202,6 @@ fn tag_for(text: &str, previous: Option<&Token>) -> Tag {
             if text.chars().count() > 1 && text.chars().all(|c| c.is_uppercase()) {
                 return Tag::Nnp;
             }
-            let _ = previous;
             Tag::None
         }
     }
@@ -185,39 +235,32 @@ impl G2p {
         }
 
         // Attach a currency sign to the number that follows it, the way the reference does.
-        let mut pending_currency: Option<&'static str> = None;
-        for token in tokens.iter_mut() {
-            if token.tag == Tag::Punct {
-                if let Some((_, _, _)) = CURRENCIES.iter().find(|(s, _, _)| *s == token.text) {
-                    pending_currency = CURRENCIES
-                        .iter()
-                        .find(|(s, _, _)| *s == token.text)
-                        .map(|(_, singular, _)| *singular);
-                    // The sign itself is silent; the unit is spoken after the number.
-                    token.phonemes = Some(String::new());
-                    continue;
-                }
-            } else if token.currency.is_none() {
-                if let Some(singular) = pending_currency.take() {
-                    token.currency = Some(singular);
-                }
-            }
-        }
+        attach_currency(&mut tokens);
 
-        // Tags, then phonemes. Tags are decided from the word alone; the neighbours only
-        // matter for the symbols.
-        let preceding: Vec<Option<Token>> = (0..tokens.len())
-            .map(|i| {
-                if i == 0 {
-                    None
-                } else {
-                    Some(tokens[i - 1].clone())
-                }
-            })
-            .collect();
+        // Tags, then phonemes. Tags are decided from the word alone.
         for i in 0..tokens.len() {
             if tokens[i].tag == Tag::None {
-                tokens[i].tag = tag_for(&tokens[i].text, preceding[i].as_ref());
+                tokens[i].tag = tag_for(&tokens[i].text);
+            }
+            // "used" turns on whether it follows a form of "be": "is used to" is the
+            // adjective (jˈuzd), "I used to" is the past habitual (jˈust). A tagger would
+            // settle this from the parse; without one the neighbouring word is the evidence.
+            if tokens[i].text.eq_ignore_ascii_case("used") {
+                let be_form = i > 0
+                    && matches!(
+                        tokens[i - 1].text.to_lowercase().as_str(),
+                        "is" | "are" | "was" | "were" | "am" | "be" | "been" | "being"
+                    );
+                let next_to = tokens
+                    .get(i + 1)
+                    .is_some_and(|next| next.text.eq_ignore_ascii_case("to"));
+                tokens[i].tag = if be_form {
+                    Tag::Jj
+                } else if next_to {
+                    Tag::Vbd
+                } else {
+                    Tag::None
+                };
             }
         }
 
@@ -233,6 +276,7 @@ impl G2p {
 
             let text = tokens[i].text.clone();
             let tag = tokens[i].tag;
+            let currency = tokens[i].currency;
             let stress = if text.chars().all(|c| !c.is_uppercase()) {
                 None
             } else if text.chars().all(|c| c.is_uppercase()) {
@@ -242,10 +286,11 @@ impl G2p {
             };
 
             let phonemes = if tag == Tag::Punct {
-                punctuation_phonemes(&text)
+                // A sign that stands for a word ("%", "&") is spoken, not punctuated.
+                symbol_phonemes(&self.lexicon, &text, &ctx).or_else(|| punctuation_phonemes(&text))
             } else if tag == Tag::Cd {
                 self.lexicon
-                    .number(&text)
+                    .number(&text, currency)
                     .map(|(ps, _)| ps)
                     .or_else(|| self.spelled(&text))
             } else {
@@ -253,12 +298,17 @@ impl G2p {
                     .word(&text, tag, stress, &ctx)
                     .map(|(ps, _)| ps)
                     .or_else(|| symbol_phonemes(&self.lexicon, &text, &ctx))
-                    .or_else(|| self.lexicon.number(&text).map(|(ps, _)| ps))
+                    .or_else(|| self.lexicon.number(&text, currency).map(|(ps, _)| ps))
                     .or_else(|| self.spelled(&text))
             };
 
             let phonemes = phonemes.unwrap_or_default();
             ctx.advance(Some(&phonemes), tag == Tag::To);
+            if SYMBOLS.iter().any(|(symbol, _)| *symbol == text) {
+                // A symbol expands to a word, and that word needs its own separation: "5%"
+                // is spoken as "five percent", not "fivepercent".
+                tokens[i].force_space = true;
+            }
             tokens[i].phonemes = Some(phonemes);
         }
 
@@ -267,21 +317,24 @@ impl G2p {
         let mut out = String::new();
         for (i, token) in tokens.iter().enumerate() {
             let phonemes = token.phonemes.as_deref().unwrap_or("");
-            if i > 0 && token.leading_space && !out.is_empty() && !out.ends_with(' ') {
+            if i > 0
+                && (token.leading_space || token.force_space)
+                && !out.is_empty()
+                && !out.ends_with(' ')
+            {
                 out.push(' ');
             }
             out.push_str(phonemes);
-            if let Some(unit) = token.currency {
-                if !phonemes.is_empty() && !unit.is_empty() {
-                    out.push(' ');
-                    if let Some(Entry) = self.lexicon.word(unit, Tag::None, None, &ctx) {
-                        out.push_str(&Entry.0);
-                    }
-                }
-            }
         }
-        // Collapse the runs of spaces that punctuation and silent currency signs leave.
-        out.split_whitespace().collect::<Vec<_>>().join(" ")
+        // Collapse the runs of spaces that punctuation and silent currency signs leave, and
+        // fold the two allophones the engine spells differently: the reference does this for
+        // every version below 2.0, and the dictionary itself is written that way ("forty" is
+        // stored as fˈɔɹTi), so producing ɾ here would disagree with every table entry.
+        out.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace('ɾ', "T")
+            .replace('ʔ', "t")
     }
 
     /// Spells a word with the dictionary's letter names. This is the last resort, and the

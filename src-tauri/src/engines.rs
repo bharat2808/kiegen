@@ -348,14 +348,26 @@ pub fn catalog(settings: &Settings) -> Vec<EngineInfo> {
             id: Engine::Kokoro,
             label: "Kokoro 82M",
             summary: "Local 82M model, 28 English voices",
-            // Honest: the ONNX engine works (see kokoro.rs) but text → phonemes is not
-            // implemented yet, so selecting this engine cannot produce speech today.
-            can_speak: false,
-            status: "Front end missing".to_string(),
-            blocked_reason: Some(
-                "the text-to-phoneme front end is not implemented yet, so it cannot turn text into speech"
-                    .to_string(),
-            ),
+            // The front end exists and is measured against the reference (g2p.rs), so this
+            // is no longer about missing code — it is about missing files. Once the graph,
+            // the tokenizer, the dictionaries and a voice table are on disk, this engine can
+            // genuinely speak, and saying otherwise would make the shortcut refuse a
+            // selection it is perfectly able to read.
+            can_speak: kokoro_weights,
+            status: if kokoro_weights {
+                "Ready".to_string()
+            } else {
+                "Weights missing".to_string()
+            },
+            blocked_reason: if kokoro_weights {
+                None
+            } else {
+                Some(
+                    "Kokoro's weights are not installed yet. Use Download in its engine card, \
+                     then try the shortcut again."
+                        .to_string(),
+                )
+            },
             needs_download: !kokoro_weights,
             download_bytes: if kokoro_weights {
                 0
@@ -503,27 +515,52 @@ mod tests {
         assert!(voices.iter().all(|v| v.unavailable.is_none()));
     }
 
-    /// Apple is the only engine that can speak today. The moment that stops being true the
-    /// UI's badge must change, so it is asserted rather than assumed.
-    /// Now four: Apple, Kokoro, Qwen, Chatterbox.
+    /// Apple is ready with nothing installed, and every engine that cannot speak must say why.
+    /// Kokoro's readiness is not a constant any more — it depends on whether its files are on
+    /// disk, which is the whole point of `can_speak`, so it is asserted in both directions.
+    /// Four engines: Apple, Kokoro, Qwen, Chatterbox.
     #[test]
-    fn only_apple_can_speak_and_the_others_say_why() {
+    fn an_engine_that_cannot_speak_always_says_why() {
         let catalog = catalog(&Settings::default());
         assert_eq!(catalog.len(), 4);
         assert!(catalog[0].can_speak, "apple must be ready");
         assert!(catalog[0].blocked_reason.is_none());
+
         for engine in &catalog[1..] {
-            assert!(
-                !engine.can_speak,
-                "{:?} must not claim readiness",
+            assert_eq!(
+                engine.can_speak,
+                engine.blocked_reason.is_none(),
+                "{:?} claims it can speak and also that it cannot",
                 engine.id
             );
-            assert!(
-                engine.blocked_reason.is_some(),
-                "{:?} must be able to explain itself when a shortcut fails",
-                engine.id
-            );
+            if !engine.can_speak {
+                assert!(
+                    engine
+                        .blocked_reason
+                        .as_ref()
+                        .is_some_and(|reason| reason.len() > 20),
+                    "{:?} must be able to explain itself when a shortcut fails, in words",
+                    engine.id
+                );
+            }
         }
+    }
+
+    /// Kokoro's badge flips with the files on disk. It used to be hard-coded to "cannot speak"
+    /// because the front end did not exist; leaving that in place would now make the shortcut
+    /// refuse a selection the engine can read perfectly well.
+    #[test]
+    fn kokoro_readiness_follows_its_files() {
+        let kokoro = catalog(&Settings::default())
+            .into_iter()
+            .find(|engine| engine.id == Engine::Kokoro)
+            .expect("kokoro is in the catalogue");
+        assert_eq!(
+            kokoro.can_speak,
+            crate::engine_paths::kokoro_installed(),
+            "the catalogue and the filesystem disagree about Kokoro"
+        );
+        assert_eq!(kokoro.needs_download, !kokoro.can_speak);
     }
 
     /// The pane is chrome, not documentation: every string the UI renders has to fit in a

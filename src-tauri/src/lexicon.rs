@@ -22,6 +22,13 @@ use crate::numbers;
 pub const PRIMARY_STRESS: char = 'ˈ';
 pub const SECONDARY_STRESS: char = 'ˌ';
 
+/// Currency signs and the words they stand for: sign, major unit, minor unit.
+pub const CURRENCIES: [(&str, &str, &str); 3] = [
+    ("$", "dollar", "cent"),
+    ("£", "pound", "pence"),
+    ("€", "euro", "cent"),
+];
+
 const VOWELS: &str = "AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ";
 const STRESSES: [char; 2] = ['ˌ', 'ˈ'];
 
@@ -38,10 +45,25 @@ pub enum Entry {
 }
 
 impl Entry {
-    fn for_tag(&self, tag: Tag) -> Option<String> {
+    /// The pronunciation for a tag. `ctx` matters because 790 entries carry a `"None"` key
+    /// that is only meant to be used when the following word's vowel is *unknown* — using it
+    /// unconditionally is how "have" comes out stressed as "hˈæv" instead of "hæv".
+    fn for_tag(&self, tag: Tag, ctx: &TokenContext) -> Option<String> {
         match self {
             Entry::Plain(ps) => Some(ps.clone()),
             Entry::Tagged(variants) => {
+                if ctx.future_vowel.is_none() {
+                    if let Some(found) = variants.get("None") {
+                        return found.clone();
+                    }
+                }
+                // An unknown tag means "the tagger has no opinion", which resolves to
+                // DEFAULT. Letting `Tag::None` fall through as the literal key "None" would
+                // collide with the dictionary's own "None" entries and pick the wrong
+                // pronunciation — "have" came out as the stressed "hˈæv" that way.
+                if tag == Tag::None {
+                    return variants.get("DEFAULT").cloned().flatten();
+                }
                 let key = tag.name();
                 if let Some(found) = variants.get(key) {
                     return found.clone();
@@ -113,16 +135,6 @@ pub struct Lexicon {
     silver: HashMap<String, String>,
 }
 
-/// The consonants whose sound changes what a following `-s` or `-ed` becomes.
-fn stress_weight(phonemes: &str) -> usize {
-    // Diphthongs and affricates count double, so stress lands on the heavier syllable.
-    const HEAVY: &str = "AIOQWYʤʧ";
-    phonemes
-        .chars()
-        .map(|c| if HEAVY.contains(c) { 2 } else { 1 })
-        .sum()
-}
-
 /// Rewrites the stress marks on a phoneme string. Directly ported, including the trick in
 /// `restress` of moving a stress mark to the next vowel by renumbering positions in halves.
 pub fn apply_stress(ps: &str, stress: Option<f32>) -> String {
@@ -133,7 +145,14 @@ pub fn apply_stress(ps: &str, stress: Option<f32>) -> String {
 
     fn restress(ps: &str) -> String {
         let chars: Vec<char> = ps.chars().collect();
-        let mut indexed: Vec<(f32, char)> = chars.iter().map(|c| (0.0, *c)).collect();
+        // Start from the characters' own positions. Initialising everything to zero (as an
+        // earlier version did) loses the ordering of every character the stress move does
+        // not touch, which is how "ɪt" became "tɪ".
+        let mut indexed: Vec<(f32, char)> = chars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i as f32, *c))
+            .collect();
         // Each stress mark moves to sit immediately before the next vowel.
         let marks: Vec<usize> = chars
             .iter()
@@ -159,7 +178,7 @@ pub fn apply_stress(ps: &str, stress: Option<f32>) -> String {
 
     if stress < -1.0 {
         // Reduced to nothing: an unstressed function word.
-        return ps.replace(PRIMARY_STRESS, "").replace(SECONDARY_STRESS, "");
+        return ps.replace([PRIMARY_STRESS, SECONDARY_STRESS], "");
     }
     if stress == -1.0 || (stress == 0.0 || stress == -0.5) && ps.contains(PRIMARY_STRESS) {
         return ps
@@ -300,10 +319,14 @@ impl Lexicon {
             return None;
         }
         let stressed = apply_stress(&phonemes, Some(0.0));
-        // Only the last syllable keeps a mark; the rest are flattened.
-        let mut parts: Vec<&str> = stressed.rsplit(SECONDARY_STRESS).collect();
-        parts.reverse();
-        Some((parts.join(&PRIMARY_STRESS.to_string()), 3))
+        // Only the *last* secondary becomes primary. Turning every one of them primary (as
+        // an earlier version did) over-stresses every letter but the first: "FBI" came out
+        // as ˈɛfbˈiˈI instead of ˌɛfbˌiˈI.
+        let mut chars: Vec<char> = stressed.chars().collect();
+        if let Some(last) = chars.iter().rposition(|c| *c == SECONDARY_STRESS) {
+            chars[last] = PRIMARY_STRESS;
+        }
+        Some((chars.into_iter().collect(), 3))
     }
 
     fn is_known(&self, word: &str) -> bool {
@@ -352,12 +375,10 @@ impl Lexicon {
                 };
                 return Some((ps.to_string(), 4));
             }
-            "in" | "In" => {
-                let stress = if ctx.future_vowel == Some(true) {
-                    ""
-                } else {
-                    "ˈ"
-                };
+            "in" | "In" | "IN" => {
+                // "in" loses its stress whenever the following word is known, and keeps it
+                // when the vowel is unknown. Getting this backwards stresses every "in".
+                let stress = if ctx.future_vowel.is_none() { "ˈ" } else { "" };
                 return Some((format!("{stress}ɪn"), 4));
             }
             "am" | "Am" => {
@@ -377,8 +398,14 @@ impl Lexicon {
             }
             "used" | "Used" | "USED" => {
                 if let Some(Entry::Tagged(variants)) = self.gold.get("used") {
-                    // "used to" is the verb form; otherwise the adjective.
-                    let key = if ctx.future_to { "VBD" } else { "DEFAULT" };
+                    // "is used to" is the adjective (jˈuzd); "I used to" is the past
+                    // habitual verb (jˈust). The caller settles which by looking at the
+                    // neighbouring words, because a tagger would have.
+                    let key = if tag == Tag::Vbd && ctx.future_to {
+                        "VBD"
+                    } else {
+                        "DEFAULT"
+                    };
                     return variants.get(key).cloned().flatten().map(|ps| (ps, 4));
                 }
             }
@@ -392,14 +419,15 @@ impl Lexicon {
         word: &str,
         tag: Tag,
         stress: Option<f32>,
-        _ctx: &TokenContext,
+        ctx: &TokenContext,
     ) -> Option<(String, u8)> {
         // An all-caps word that is not itself in the dictionary is an acronym: spell it.
-        if word.chars().all(|c| c.is_uppercase()) && !self.gold.contains_key(word) {
-            if word.chars().count() > 1 {
-                if let Some(result) = self.spell_letters(word) {
-                    return Some(result);
-                }
+        if word.chars().all(|c| c.is_uppercase())
+            && word.chars().count() > 1
+            && !self.gold.contains_key(word)
+        {
+            if let Some(result) = self.spell_letters(word) {
+                return Some(result);
             }
         }
 
@@ -408,7 +436,7 @@ impl Lexicon {
             None => (None, 4),
         };
         let (phonemes, rating) = match entry {
-            Some(entry) => (entry.for_tag(tag), rating),
+            Some(entry) => (entry.for_tag(tag, ctx), rating),
             None => match self.silver.get(word) {
                 Some(ps) => (Some(ps.clone()), 3),
                 None => (None, 3),
@@ -568,7 +596,9 @@ impl Lexicon {
     }
 
     /// Numbers, delegated to the ported `num2words` in `crate::numbers`.
-    pub fn number(&self, word: &str) -> Option<(String, u8)> {
+    /// Numbers and money. The currency sign is why this takes an argument: "$3.50" is
+    /// "three dollars and fifty cents", not "three point five dollars".
+    pub fn number(&self, word: &str, currency: Option<&str>) -> Option<(String, u8)> {
         let mut digits_end = 0;
         for (i, c) in word.char_indices() {
             if c.is_ascii_digit() || c == ',' || c == '.' {
@@ -583,6 +613,36 @@ impl Lexicon {
         let digits = &word[..digits_end];
         let suffix = &word[digits_end..];
         let cleaned = digits.replace(',', "");
+
+        // Currency: "$12" is "twelve dollars"; "$3.50" is "three dollars and fifty cents".
+        // The unit is plural unless the amount is exactly one.
+        if let Some((_, major_unit, minor_unit)) =
+            currency.and_then(|sign| CURRENCIES.iter().find(|(s, _, _)| *s == sign))
+        {
+            let (major, minor) = match cleaned.split_once('.') {
+                // Only a plausible cents value is cents: "$1.2345" is not "and 23 cents",
+                // so anything longer than two fractional digits is not treated as money.
+                Some((whole, fraction)) if fraction.len() < 3 => (
+                    whole.parse::<u64>().ok()?,
+                    // The digits *are* the cents: "3.50" is fifty cents, and the reference
+                    // reads "3.5" as five cents rather than fifty.
+                    Some(fraction.parse::<u64>().unwrap_or(0)),
+                ),
+                _ => (cleaned.parse::<u64>().ok()?, None),
+            };
+            let mut parts = vec![self.spelled_number(&numbers::cardinal(major))?];
+            parts.push(self.money_unit(major_unit, major != 1)?);
+            if let Some(cents) = minor.filter(|cents| *cents > 0) {
+                // This "and" *is* spoken — the one num2words inserts inside a number is not.
+                parts.push(
+                    self.lookup("and", Tag::None, None, &TokenContext::default())?
+                        .0,
+                );
+                parts.push(self.spelled_number(&numbers::cardinal(cents))?);
+                parts.push(self.money_unit(minor_unit, cents != 1)?);
+            }
+            return Some((parts.join(" "), 3));
+        }
 
         let words = if suffix == "st" || suffix == "nd" || suffix == "rd" || suffix == "th" {
             match cleaned.parse::<u64>() {
@@ -610,28 +670,8 @@ impl Lexicon {
             }
         };
 
-        // Each word of the number is looked up, and they are joined by spaces.
-        let mut parts = Vec::new();
-        for piece in words.split(|c: char| !c.is_alphabetic() && c != '-') {
-            if piece.is_empty() {
-                continue;
-            }
-            let (ps, _) = self
-                .lookup(piece, Tag::None, None, &TokenContext::default())
-                .or_else(|| {
-                    self.lookup(
-                        &piece.to_lowercase(),
-                        Tag::None,
-                        None,
-                        &TokenContext::default(),
-                    )
-                })?;
-            parts.push(ps);
-        }
-        if parts.is_empty() {
-            return None;
-        }
-        let joined = parts.join(" ");
+        // Each word of the number is looked up, and they are joined by single spaces.
+        let joined = self.spelled_number(&words)?;
         let phonemes = match suffix {
             "s" | "'s" => self.add_s(&joined)?,
             "ed" | "'d" => self.add_ed(&joined)?,
@@ -639,6 +679,41 @@ impl Lexicon {
             _ => joined,
         };
         Some((phonemes, 3))
+    }
+
+    /// Looks up each word of a spelled-out number and joins them with single spaces.
+    fn spelled_number(&self, words: &str) -> Option<String> {
+        let mut parts = Vec::new();
+        for piece in words.split(|c: char| !c.is_alphabetic()) {
+            if piece.is_empty() || piece == "and" {
+                continue;
+            }
+            // The decimal point is unstressed: "three point five", not "three PÓINT five".
+            let stress = if piece == "point" { Some(-2.0) } else { None };
+            let (ps, _) = self
+                .lookup(piece, Tag::None, stress, &TokenContext::default())
+                .or_else(|| {
+                    self.lookup(
+                        &piece.to_lowercase(),
+                        Tag::None,
+                        stress,
+                        &TokenContext::default(),
+                    )
+                })?;
+            parts.push(ps);
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+
+    /// A money unit, pluralised unless the amount is exactly one: "one dollar", "two
+    /// dollars", "fifty cents".
+    fn money_unit(&self, unit: &str, plural: bool) -> Option<String> {
+        let (ps, _) = self.lookup(unit, Tag::None, None, &TokenContext::default())?;
+        if plural {
+            self.add_s(&ps)
+        } else {
+            Some(ps)
+        }
     }
 
     /// The last resort, and the reason this port never deletes a word: spell it.

@@ -15,6 +15,7 @@ pub mod lexicon;
 pub mod numbers;
 mod shortcuts;
 mod speech;
+pub mod spoken;
 
 use std::sync::Mutex;
 
@@ -26,7 +27,7 @@ use tauri_plugin_global_shortcut::ShortcutState;
 
 use config::Settings;
 use shortcuts::Action;
-use speech::{Speaker, Voice};
+use speech::Voice;
 
 /// Copy-mode capture is bounded: an app that never touches the pasteboard should
 /// cost a blink, not a hang.
@@ -39,7 +40,9 @@ const ACCESSIBILITY_PANE: &str =
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
-    pub speaker: Speaker,
+    /// Every engine the app can speak with, routed by the settings. The Apple path lives
+    /// inside it rather than beside it so there is one place that decides what speaks.
+    pub spoken: spoken::Spoken,
     pub voices: Vec<Voice>,
     pub bindings: Mutex<Vec<shortcuts::Binding>>,
 }
@@ -91,7 +94,7 @@ fn ui_state(app: &AppHandle, refused_shortcuts: Vec<String>) -> UiState {
         engines,
         trusted: capture::is_trusted(),
         secure_input: capture::secure_input_active(),
-        speaking: state.speaker.is_speaking(),
+        speaking: state.spoken.is_speaking(),
         refused_shortcuts,
         system_language: speech::system_language(),
         config_path: config::settings_path(app).display().to_string(),
@@ -134,15 +137,13 @@ fn selected_engine_refusal(settings: &Settings) -> Option<String> {
 /// The whole point of the app: capture → speak. Runs off the main thread because the
 /// AX read plus a possible ⌘C round-trip blocks for up to `COPY_TIMEOUT_MS`.
 fn speak_selection(app: &AppHandle) {
-    let (mode, restore, max_chars, voice, rate, refusal) = {
+    let (mode, restore, max_chars, refusal) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap();
         (
             settings.capture_mode,
             settings.restore_clipboard,
             settings.max_chars,
-            settings.voice.clone(),
-            settings.rate,
             selected_engine_refusal(&settings),
         )
     };
@@ -174,11 +175,21 @@ fn speak_selection(app: &AppHandle) {
     };
     let chars = text.chars().count();
 
-    let speaker = &app.state::<AppState>().speaker;
-    match speaker.speak(&text, voice.as_deref(), rate) {
-        Ok(()) => {
-            let message = truncated.then(|| format!("truncated to {max_chars} characters"));
-            emit_status(app, Phase::Speaking, message, Some(chars));
+    // The settings are cloned out rather than held: synthesis takes about a second, and the
+    // settings panel polls `get_state` on the same mutex.
+    let report = {
+        let state = app.state::<AppState>();
+        let settings = state.settings.lock().unwrap().clone();
+        state.spoken.speak(&settings, &text)
+    };
+    match report {
+        Ok(report) => {
+            let message = if truncated {
+                format!("truncated to {max_chars} characters")
+            } else {
+                report.summary()
+            };
+            emit_status(app, Phase::Speaking, Some(message), Some(chars));
         }
         Err(error) => emit_status(app, Phase::Error, Some(error), Some(chars)),
     }
@@ -186,15 +197,10 @@ fn speak_selection(app: &AppHandle) {
 
 /// Speak a caller-supplied string (voice previews), bypassing capture entirely.
 fn speak_given(app: &AppHandle, text: String) {
-    let (voice, rate, max_chars, refusal) = {
+    let (max_chars, refusal) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap();
-        (
-            settings.voice.clone(),
-            settings.rate,
-            settings.max_chars,
-            selected_engine_refusal(&settings),
-        )
+        (settings.max_chars, selected_engine_refusal(&settings))
     };
     if let Some(reason) = refusal {
         emit_status(app, Phase::Error, Some(reason), None);
@@ -202,12 +208,13 @@ fn speak_given(app: &AppHandle, text: String) {
     }
     let text: String = text.chars().take(max_chars).collect();
     let chars = text.chars().count();
-    match app
-        .state::<AppState>()
-        .speaker
-        .speak(&text, voice.as_deref(), rate)
-    {
-        Ok(()) => emit_status(app, Phase::Speaking, None, Some(chars)),
+    let report = {
+        let state = app.state::<AppState>();
+        let settings = state.settings.lock().unwrap().clone();
+        state.spoken.speak(&settings, &text)
+    };
+    match report {
+        Ok(_) => emit_status(app, Phase::Speaking, None, Some(chars)),
         Err(error) => emit_status(app, Phase::Error, Some(error), Some(chars)),
     }
 }
@@ -268,9 +275,15 @@ fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<
             emit_status(&app, Phase::Error, Some(reason), None);
             return;
         }
-        let speaker = &app.state::<AppState>().speaker;
-        match speaker.speak(&sample, voice.as_deref(), rate) {
-            Ok(()) => emit_status(&app, Phase::Speaking, Some("preview".to_string()), None),
+        let report = {
+            let state = app.state::<AppState>();
+            let settings = state.settings.lock().unwrap().clone();
+            state
+                .spoken
+                .preview(&settings, voice.as_deref(), rate, &sample)
+        };
+        match report {
+            Ok(_) => emit_status(&app, Phase::Speaking, Some("preview".to_string()), None),
             Err(error) => emit_status(&app, Phase::Error, Some(error), None),
         }
     });
@@ -278,7 +291,7 @@ fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<
 
 #[tauri::command]
 fn stop_speaking(app: AppHandle) {
-    app.state::<AppState>().speaker.stop();
+    app.state::<AppState>().spoken.stop();
     emit_status(&app, Phase::Idle, None, None);
 }
 
@@ -440,12 +453,12 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
                 std::thread::spawn(move || speak_selection(&app));
             }
             "stop" => {
-                app.state::<AppState>().speaker.stop();
+                app.state::<AppState>().spoken.stop();
                 emit_status(app, Phase::Idle, None, None);
             }
             "settings" => show_settings(app),
             "quit" => {
-                app.state::<AppState>().speaker.stop();
+                app.state::<AppState>().spoken.stop();
                 app.exit(0);
             }
             _ => {}
@@ -475,7 +488,7 @@ pub fn run() {
                             std::thread::spawn(move || speak_selection(&app));
                         }
                         Some(Action::Stop) => {
-                            app.state::<AppState>().speaker.stop();
+                            app.state::<AppState>().spoken.stop();
                             emit_status(app, Phase::Idle, None, None);
                         }
                         None => {}
@@ -494,7 +507,7 @@ pub fn run() {
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
-                speaker: Speaker::new(),
+                spoken: spoken::Spoken::new(),
                 voices,
                 bindings: Mutex::new(Vec::new()),
             });

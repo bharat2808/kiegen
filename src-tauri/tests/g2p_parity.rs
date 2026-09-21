@@ -104,8 +104,12 @@ fn the_reference_corpus_matches() {
     // A floor, not a target: it is what this port currently achieves, and it exists so a
     // change cannot silently make things worse.
     let agreement = matched_tokens as f32 / total_tokens as f32;
+    // Measured at 86.4% (27/42 sentences byte-identical) on the committed corpus. The
+    // residue is almost entirely the missing part-of-speech tagger: "record" as a verb
+    // needs the parse, and no word list can supply it. The floor sits just under the
+    // measurement so a regression trips it without a cosmetic difference doing so.
     assert!(
-        agreement >= 0.80,
+        agreement >= 0.85,
         "agreement dropped to {:.1}%, below the recorded floor",
         agreement * 100.0
     );

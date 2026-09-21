@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 pub const KOKORO_MODEL_FILE: &str = "onnx/model.onnx";
 pub const KOKORO_TOKENIZER_FILE: &str = "tokenizer.json";
 
+/// The pronunciation dictionaries the front end reads. Kokoro takes phonemes, so without
+/// these it cannot read a word, however complete the rest of the install is.
+pub const LEXICON_GOLD_FILE: &str = "lexicon/us_gold.json";
+pub const LEXICON_SILVER_FILE: &str = "lexicon/us_silver.json";
+
 /// Env override, used by the verification harnesses to point at a scratch tree.
 const MODELS_ENV: &str = "KIEGEN_MODELS_DIR";
 const SIDECAR_PYTHON_ENV: &str = "KIEGEN_SIDECAR_PYTHON";
@@ -54,6 +59,10 @@ pub fn kokoro_installed() -> bool {
 
 fn kokoro_installed_at(dir: &Path) -> bool {
     if !dir.join(KOKORO_MODEL_FILE).is_file() || !dir.join(KOKORO_TOKENIZER_FILE).is_file() {
+        return false;
+    }
+    // The dictionaries count: an install without them is an engine that cannot read.
+    if !dir.join(LEXICON_GOLD_FILE).is_file() || !dir.join(LEXICON_SILVER_FILE).is_file() {
         return false;
     }
     match std::fs::read_dir(dir.join("voices")) {
@@ -135,12 +144,28 @@ mod tests {
     }
 
     #[test]
-    fn the_three_required_files_together_read_as_installed() {
+    fn every_required_file_together_reads_as_installed() {
         let dir = scratch("complete");
+        std::fs::create_dir_all(dir.join("lexicon")).unwrap();
+        std::fs::write(dir.join(KOKORO_MODEL_FILE), b"x").unwrap();
+        std::fs::write(dir.join(KOKORO_TOKENIZER_FILE), b"x").unwrap();
+        std::fs::write(dir.join(LEXICON_GOLD_FILE), b"x").unwrap();
+        std::fs::write(dir.join(LEXICON_SILVER_FILE), b"x").unwrap();
+        std::fs::write(dir.join("voices/af_heart.bin"), b"x").unwrap();
+        assert!(kokoro_installed_at(&dir));
+    }
+
+    /// The dictionaries are not optional: without them the engine has nothing to read words
+    /// with, so a graph-plus-voices install must *not* count as installed. This is the same
+    /// shape of bug as the `onnx/` path that used to make every complete install read as
+    /// missing.
+    #[test]
+    fn a_graph_without_the_dictionaries_is_not_installed() {
+        let dir = scratch("no-lexicon");
         std::fs::write(dir.join(KOKORO_MODEL_FILE), b"x").unwrap();
         std::fs::write(dir.join(KOKORO_TOKENIZER_FILE), b"x").unwrap();
         std::fs::write(dir.join("voices/af_heart.bin"), b"x").unwrap();
-        assert!(kokoro_installed_at(&dir));
+        assert!(!kokoro_installed_at(&dir));
     }
 
     /// A directory that does not exist must read as not installed, not as an error.

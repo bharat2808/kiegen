@@ -175,7 +175,7 @@ pub fn year(n: u64) -> String {
     }
     let (high, low) = (n / 100, n % 100);
     // 1000 and 2000 are "one thousand" and "two thousand", not "ten hundred".
-    if n % 1000 == 0 {
+    if n.is_multiple_of(1000) {
         return cardinal(n);
     }
     if low == 0 {
