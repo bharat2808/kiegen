@@ -242,7 +242,7 @@ If kiegen depends on *no* third-party Kokoro wrapper — neither the Rust crate 
 **The tensor contract, verified from the reference implementation and the model's own files:**
 
 - `input_ids` — `int64`, shape `(1, L)`, `L ≤ 510`
-- `style` — `float32`, shape `(1, 256)`; the voice file is **511 style rows × 256 dims of little-endian f32** (0.5 MB per voice), and the row is chosen by *token count*: `voice[len(ids) * 256 : (len(ids)+1) * 256]`
+- `style` — `float32`, shape `(1, 256)`; the voice file is **510 style rows × 256 dims of little-endian f32** (0.5 MB per voice), and the row is chosen by *token count*: `voice[len(ids) * 256 : (len(ids)+1) * 256]`
 - `speed` — `float32` scalar. **Pitfall: exports disagree** — v1.0 takes a float speed, some non-English exports take an int (called out in `kokoro-onnx/session.py`)
 - output — `float32` mono at 24 kHz
 - **Voice blending is just arithmetic**: `np.add(a_nicole * 0.5, a_michael * 0.5)` on the style vectors (from `examples/with_blending.py`). Weighted blend in the config maps directly onto this, no model involvement.

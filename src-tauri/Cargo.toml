@@ -33,8 +33,16 @@ core-foundation = "0.10.1"
 accessibility-sys = "0.2.0"
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", features = ["NSPasteboard", "NSPasteboardItem"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSPasteboard", "NSPasteboardItem", "NSSpeechSynthesizer"] }
 libc = "0.2"
+# Weight downloads. Both are already in the tree via `ort-sys`, so declaring them adds no
+# crates; `default-features` matches what ort-sys already enabled (`rustls`, `gzip`).
+ureq = "3.4"
+sha2 = "0.10"
+# ONNX Runtime bindings for the opt-in Kokoro engine. `download-binaries` vendors the
+# runtime at build time so the engine works out of the box; switching to `load-dynamic`
+# would keep the base bundle small and move the runtime onto Kokoro's install path.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

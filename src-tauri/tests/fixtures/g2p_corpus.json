@@ -1,0 +1,425 @@
+{
+ "corpus": [
+  {
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "phonemes": "ðə kwˈɪk bɹˈWn fˈɑks ʤˈʌmps ˈOvəɹ ðə lˈAzi dˈɔɡ.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "A quick brown fox jumps over an old lazy dog.",
+   "phonemes": "ɐ kwˈɪk bɹˈWn fˈɑks ʤˈʌmps ˈOvəɹ ɐn ˈOld lˈAzi dˈɔɡ.",
+   "unk": 0,
+   "tokens": 11
+  },
+  {
+   "text": "I want to go to the store and buy an apple.",
+   "phonemes": "ˌI wˈɑnt tə ɡˌO tə ðə stˈɔɹ ænd bˈI ɐn ˈæpᵊl.",
+   "unk": 0,
+   "tokens": 12
+  },
+  {
+   "text": "She is used to living in the city.",
+   "phonemes": "ʃˌi ɪz jˈuzd tə lˈɪvɪŋ ɪn ðə sˈɪTi.",
+   "unk": 0,
+   "tokens": 9
+  },
+  {
+   "text": "This is the best of the best.",
+   "phonemes": "ðˌɪs ɪz ðə bˈɛst ʌv ðə bˈɛst.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "He looked at the record and decided to record it.",
+   "phonemes": "hˌi lˈʊkt æt ðə ɹˈɛkəɹd ænd dəsˈIdᵻd tə ɹəkˈɔɹd ɪt.",
+   "unk": 0,
+   "tokens": 11
+  },
+  {
+   "text": "They were reading a book about reading.",
+   "phonemes": "ðˌA wɜɹ ɹˈidɪŋ ɐ bˈʊk əbˈWt ɹˈidɪŋ.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "The cats walked and the dogs ran.",
+   "phonemes": "ðə kˈæts wˈɔkt ænd ðə dˈɔɡz ɹˈæn.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "She walked, talked, and laughed.",
+   "phonemes": "ʃˌi wˈɔkt, tˈɔkt, ænd lˈæft.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "Running and jumping are good for you.",
+   "phonemes": "ɹˈʌnɪŋ ænd ʤˈʌmpɪŋ ɑɹ ɡˈʊd fɔɹ ju.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "He is fixing the boxes and watching the buses.",
+   "phonemes": "hˌi ɪz fˈɪksɪŋ ðə bˈɑksᵻz ænd wˈɑʧɪŋ ðə bˈʌsᵻz.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "3 cats, 42 dogs, and 1000 birds.",
+   "phonemes": "θɹˈi kˈæts, fˈɔɹTi tˈu dˈɔɡz, ænd wˈʌn θˈWzᵊnd bˈɜɹdz.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "It costs $3.50 or maybe $12.",
+   "phonemes": "ˌɪt kˈɔsts θɹˈi dˈɑləɹz ænd fˈɪfti sˈɛnts ɔɹ mˈAbi twˈɛlv dˈɑləɹz.",
+   "unk": 0,
+   "tokens": 9
+  },
+  {
+   "text": "I have £20 and €15 left.",
+   "phonemes": "ˌI hæv twˈɛnti pˈWndz ænd fˌɪftˈin jˈʊɹOz lˈɛft.",
+   "unk": 0,
+   "tokens": 9
+  },
+  {
+   "text": "The temperature is 21 degrees.",
+   "phonemes": "ðə tˈɛmpɹəʧəɹ ɪz twˈɛnti wˈʌn dəɡɹˈiz.",
+   "unk": 0,
+   "tokens": 6
+  },
+  {
+   "text": "He was born in 1990 and left in 2005.",
+   "phonemes": "hˌi wʌz bˈɔɹn ɪn nˌIntˈin nˈIndi ænd lˈɛft ɪn tˈu θˈWzᵊnd fˈIv.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "1234567 is a big number.",
+   "phonemes": "wˈʌn mˈɪljᵊn tˈu hˈʌndɹəd θˈɜɹTi fˈɔɹ θˈWzᵊnd fˈIv hˈʌndɹəd sˈɪksti sˈɛvən ɪz ɐ bˈɪɡ nˈʌmbəɹ.",
+   "unk": 0,
+   "tokens": 6
+  },
+  {
+   "text": "The 3rd of May, 2024.",
+   "phonemes": "ðə θˈɜɹd ʌv mˈA, twˈɛnti twˈɛnti fˈɔɹ.",
+   "unk": 0,
+   "tokens": 7
+  },
+  {
+   "text": "It is 3.14159 exactly.",
+   "phonemes": "ˌɪt ɪz θɹˈi pYnt wˈʌn fˈɔɹ wˈʌn fˈIv nˈIn ɪɡzˈæktli.",
+   "unk": 0,
+   "tokens": 5
+  },
+  {
+   "text": "The meeting is at 9:30 am.",
+   "phonemes": "ðə mˈiTɪŋ ɪz æt nˈIn❓ θˈɜɹTi ˌAˈɛm.",
+   "unk": 0,
+   "tokens": 7
+  },
+  {
+   "text": "NASA and the FBI and the BBC.",
+   "phonemes": "nˈæsə ænd ði ˌɛfbˌiˈI ænd ðə bˌibˌisˈi.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "EBITDA was up 5% this year.",
+   "phonemes": "ˌibˌiˌItˌidˌiˈA wʌz ˌʌp fˈIv pəɹsˈɛnt ðɪs jˈɪɹ.",
+   "unk": 0,
+   "tokens": 7
+  },
+  {
+   "text": "The U.S. economy grew.",
+   "phonemes": "ðə jˌuˈɛs ikˈɑnəmi ɡɹˈu.",
+   "unk": 0,
+   "tokens": 5
+  },
+  {
+   "text": "kiegen reads whatever you select.",
+   "phonemes": "❓ ɹˈidz wəTˈɛvəɹ ju səlˈɛkt.",
+   "unk": 1,
+   "tokens": 6
+  },
+  {
+   "text": "Kokoro and Chatterbox are local engines.",
+   "phonemes": "❓ ænd ʧˈæTəɹbˌɑks ɑɹ lˈOkəl ˈɛnʤənz.",
+   "unk": 1,
+   "tokens": 7
+  },
+  {
+   "text": "He said 'hello' and left.",
+   "phonemes": "hˌi sˈɛd “həlˈO” ænd lˈɛft.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "Hello, world! How are you?",
+   "phonemes": "həlˈO, wˈɜɹld! hˌW ɑɹ ju?",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "A hyphen-ated word and an under_score.",
+   "phonemes": "ɐ hˈIfənˌATᵻd wˈɜɹd ænd ɐn ˈʌndəɹskˌɔɹ.",
+   "unk": 0,
+   "tokens": 7
+  },
+  {
+   "text": "The phone number is 555-1234.",
+   "phonemes": "ðə fˈOn nˈʌmbəɹ ɪz fˈIv hˈʌndɹəd fˈɪfti fˈIvtwˌɛlv θˌɜɹTi fˌɔɹ.",
+   "unk": 0,
+   "tokens": 6
+  },
+  {
+   "text": "8 - 3 = 5, and 2 + 2 = 4.",
+   "phonemes": "ˈAt ❓ θɹˈi ❓ fˈIv, ænd tˈu plˈʌs tˈu ❓ fˈɔɹ.",
+   "unk": 3,
+   "tokens": 13
+  },
+  {
+   "text": "Email me at me@example.com please.",
+   "phonemes": "ˈimˌAl mˌi æt mˌi æt ɪɡzˈæmpəl kˈɑm plˈiz.",
+   "unk": 0,
+   "tokens": 6
+  },
+  {
+   "text": "Visit https://example.com for info.",
+   "phonemes": "vˈɪzət ❓❓ slˌæʃ slˌæʃ ɪɡzˈæmpəl dˌɑt kˈɑm fɔɹ ˈɪnfO.",
+   "unk": 0,
+   "tokens": 5
+  },
+  {
+   "text": "She works at 50 Cooper Street in New York.",
+   "phonemes": "ʃˌi wˈɜɹks æt fˈɪfti kˈupəɹ stɹˈit ɪn nˈu jˈɔɹk.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "An hour ago, an honest answer.",
+   "phonemes": "ɐn ˈWəɹ əɡˈO, ɐn ˈɑnəst ˈænsəɹ.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "The [stress](+2) is on the right [syllable](/ˈsɪləbəl/).",
+   "phonemes": "ðə stɹˈɛs ɪz ˌɔn ðə ɹˈIt ˈsɪləbəl.",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "One, two, three, four, five.",
+   "phonemes": "wˈʌn, tˈu, θɹˈi, fˈɔɹ, fˈIv.",
+   "unk": 0,
+   "tokens": 10
+  },
+  {
+   "text": "Twenty-first and twenty-second place.",
+   "phonemes": "twˈɛntifˌɜɹst ænd twˌɛntisˈɛkənd plˈAs.",
+   "unk": 0,
+   "tokens": 5
+  },
+  {
+   "text": "One hundred and twenty-three apples.",
+   "phonemes": "wˈʌn hˈʌndɹəd ænd twˈɛntiθɹˌi ˈæpᵊlz.",
+   "unk": 0,
+   "tokens": 6
+  },
+  {
+   "text": "Zero, nothing, and nil.",
+   "phonemes": "zˈɪɹO, nˈʌθɪŋ, ænd nˈɪl.",
+   "unk": 0,
+   "tokens": 7
+  },
+  {
+   "text": "Dr. Smith and Mr. Jones met Mrs. Brown.",
+   "phonemes": "dˈɑktəɹ smˈɪθ ænd mˈɪstəɹ ʤˈOnz mˈɛt mˈɪsɪz bɹˈWn.",
+   "unk": 0,
+   "tokens": 9
+  },
+  {
+   "text": "Oh my gosh, really? Yes!",
+   "phonemes": "ˈO mI ɡˈɑʃ, ɹˈiᵊli? jˈɛs!",
+   "unk": 0,
+   "tokens": 8
+  },
+  {
+   "text": "2 of the 3 people left.",
+   "phonemes": "tˈu ʌv ðə θɹˈi pˈipᵊl lˈɛft.",
+   "unk": 0,
+   "tokens": 7
+  }
+ ],
+ "words": [
+  "$12",
+  "$3.50",
+  "+",
+  "-",
+  "1000",
+  "1234567",
+  "1990",
+  "2",
+  "2005",
+  "2024",
+  "21",
+  "3",
+  "3.14159",
+  "3rd",
+  "4",
+  "42",
+  "5",
+  "5%",
+  "50",
+  "555-1234",
+  "8",
+  "9:30",
+  "=",
+  "[stress](+2)",
+  "[syllable](/ˈsɪləbəl/)",
+  "a",
+  "about",
+  "ago",
+  "am",
+  "an",
+  "and",
+  "answer",
+  "apple",
+  "apples",
+  "are",
+  "at",
+  "bbc",
+  "best",
+  "big",
+  "birds",
+  "book",
+  "born",
+  "boxes",
+  "brown",
+  "buses",
+  "buy",
+  "cats",
+  "chatterbox",
+  "city",
+  "cooper",
+  "costs",
+  "decided",
+  "degrees",
+  "dog",
+  "dogs",
+  "dr",
+  "ebitda",
+  "economy",
+  "email",
+  "engines",
+  "exactly",
+  "fbi",
+  "five",
+  "fixing",
+  "for",
+  "four",
+  "fox",
+  "go",
+  "good",
+  "gosh",
+  "grew",
+  "have",
+  "he",
+  "hello",
+  "honest",
+  "hour",
+  "how",
+  "https://example.com",
+  "hundred",
+  "hyphen-ated",
+  "i",
+  "in",
+  "info",
+  "is",
+  "it",
+  "jones",
+  "jumping",
+  "jumps",
+  "kiegen",
+  "kokoro",
+  "laughed",
+  "lazy",
+  "left",
+  "living",
+  "local",
+  "looked",
+  "may",
+  "maybe",
+  "me",
+  "me@example.com",
+  "meeting",
+  "met",
+  "mr",
+  "mrs",
+  "my",
+  "nasa",
+  "new",
+  "nil",
+  "nothing",
+  "number",
+  "of",
+  "oh",
+  "old",
+  "on",
+  "one",
+  "or",
+  "over",
+  "people",
+  "phone",
+  "place",
+  "please",
+  "quick",
+  "ran",
+  "reading",
+  "reads",
+  "really",
+  "record",
+  "right",
+  "running",
+  "said",
+  "select",
+  "she",
+  "smith",
+  "store",
+  "street",
+  "talked",
+  "temperature",
+  "the",
+  "they",
+  "this",
+  "three",
+  "to",
+  "twenty-first",
+  "twenty-second",
+  "twenty-three",
+  "two",
+  "u.s",
+  "under_score",
+  "up",
+  "used",
+  "visit",
+  "walked",
+  "want",
+  "was",
+  "watching",
+  "were",
+  "whatever",
+  "word",
+  "works",
+  "world",
+  "year",
+  "yes",
+  "york",
+  "you",
+  "zero",
+  "£20",
+  "€15"
+ ]
+}

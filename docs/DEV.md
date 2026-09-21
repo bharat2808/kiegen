@@ -54,6 +54,28 @@ so the hotkey path is debuggable without a GUI.
   is written to disk, and `CommandOrControl` maps to SUPER on macOS.
 - `speech::tests::*` — `say -v ?` parsing, including names with spaces ("Bad News").
 
+### The install path is an integration test, and it is not run by default
+
+`tests/install.rs` is the only test that answers "does a download produce a working
+engine?". It fetches the real 340 MB, writes it to a real directory, then loads the graph in
+ONNX Runtime and synthesizes from a known phoneme string. It is `#[ignore]`d because it needs
+the network and a few hundred megabytes:
+
+```
+cargo test --test install -- --ignored --nocapture
+```
+
+Run it after touching `download.rs`, `engine_paths.rs` or the Kokoro file set. It caught two
+bugs that every unit test passed straight through, which is the argument for keeping it:
+
+- `probe` gave up on files whose HEAD carries no `x-linked-size`. `tokenizer.json` is one,
+  and the engine cannot start without it.
+- `KOKORO_MODEL_FILE` was `"model.onnx"` while the file lands at `onnx/model.onnx`, so
+  `kokoro_installed()` never returned true — the engine badge would have stayed on "Needs
+  340 MB" after a *successful* install. Its unit tests agreed with it, because they wrote
+  their fixtures to the same wrong path. A test that shares the implementation's mistake
+  cannot catch it.
+
 What no test can cover: the actual end-to-end capture, because it needs a real grant and
 a real selection in a real app. To check it by hand:
 

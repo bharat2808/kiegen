@@ -216,8 +216,29 @@ body {
   border-color: var(--accent);
 }
 
+.sel-row[aria-disabled="true"],
 .sel-row:disabled {
   opacity: 0.6;
+}
+
+/* A disabled row is not a control: drop the hover affordance too. */
+.sel-row[aria-disabled="true"]:hover,
+.sel-row:disabled:hover {
+  border-color: transparent;
+}
+
+/* Weight download progress. Sized to read as a hairline, not a widget. */
+.progress {
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--label) 14%, transparent);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
 }
 
 .sel-row .glyph {

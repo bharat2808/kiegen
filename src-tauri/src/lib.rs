@@ -5,7 +5,14 @@
 //! the Rust service below; the webview is a config editor.
 
 mod capture;
-mod config;
+pub mod config;
+pub mod download;
+pub mod engine_paths;
+pub mod engines;
+pub mod g2p;
+pub mod kokoro;
+pub mod lexicon;
+pub mod numbers;
 mod shortcuts;
 mod speech;
 
@@ -57,6 +64,9 @@ struct StatusEvent {
 struct UiState {
     settings: Settings,
     voices: Vec<Voice>,
+    /// Every engine with its voices and its readiness. The picker renders from this, so
+    /// adding an engine never means editing TypeScript.
+    engines: Vec<engines::EngineInfo>,
     trusted: bool,
     /// True while a password field has secure input on — a copy-mode capture will
     /// refuse rather than fail mysteriously, and the UI says so up front.
@@ -72,9 +82,13 @@ struct UiState {
 fn ui_state(app: &AppHandle, refused_shortcuts: Vec<String>) -> UiState {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
+    // Built before the struct literal: the literal moves `settings` into its first field,
+    // so borrowing it later in the same expression is a borrow of a moved value.
+    let engines = engines::catalog(&settings);
     UiState {
         settings,
         voices: state.voices.clone(),
+        engines,
         trusted: capture::is_trusted(),
         secure_input: capture::secure_input_active(),
         speaking: state.speaker.is_speaking(),
@@ -95,10 +109,32 @@ fn emit_status(app: &AppHandle, phase: Phase, message: Option<String>, chars: Op
     );
 }
 
+/// Why the selected engine cannot speak, or `None` if it can.
+///
+/// A user who picks Kokoro must never hear Samantha and conclude that is what Kokoro
+/// sounds like, so there is no fallback here — the shortcut reports the reason instead.
+fn selected_engine_refusal(settings: &Settings) -> Option<String> {
+    if settings.engine == config::Engine::Apple {
+        return None;
+    }
+    engines::catalog(settings)
+        .into_iter()
+        .find(|info| info.id == settings.engine)
+        .map(|info| match info.blocked_reason {
+            // The user asked for speech and got silence: give them the reason and the way
+            // out, rather than the terse status line the settings pane shows.
+            Some(reason) => format!(
+                "{}: {reason}. Switch to the Apple system voices to read the selection now.",
+                info.label
+            ),
+            None => format!("{} cannot speak right now.", info.label),
+        })
+}
+
 /// The whole point of the app: capture → speak. Runs off the main thread because the
 /// AX read plus a possible ⌘C round-trip blocks for up to `COPY_TIMEOUT_MS`.
 fn speak_selection(app: &AppHandle) {
-    let (mode, restore, max_chars, voice, rate) = {
+    let (mode, restore, max_chars, voice, rate, refusal) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap();
         (
@@ -107,8 +143,16 @@ fn speak_selection(app: &AppHandle) {
             settings.max_chars,
             settings.voice.clone(),
             settings.rate,
+            selected_engine_refusal(&settings),
         )
     };
+
+    // Check before capturing: there is no point running a ⌘C round-trip for text the
+    // engine cannot speak.
+    if let Some(reason) = refusal {
+        emit_status(app, Phase::Error, Some(reason), None);
+        return;
+    }
 
     emit_status(app, Phase::Capturing, None, None);
 
@@ -142,11 +186,20 @@ fn speak_selection(app: &AppHandle) {
 
 /// Speak a caller-supplied string (voice previews), bypassing capture entirely.
 fn speak_given(app: &AppHandle, text: String) {
-    let (voice, rate, max_chars) = {
+    let (voice, rate, max_chars, refusal) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap();
-        (settings.voice.clone(), settings.rate, settings.max_chars)
+        (
+            settings.voice.clone(),
+            settings.rate,
+            settings.max_chars,
+            selected_engine_refusal(&settings),
+        )
     };
+    if let Some(reason) = refusal {
+        emit_status(app, Phase::Error, Some(reason), None);
+        return;
+    }
     let text: String = text.chars().take(max_chars).collect();
     let chars = text.chars().count();
     match app
@@ -203,6 +256,18 @@ fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<
     let sample =
         text.unwrap_or_else(|| "This is how I sound when reading your selection.".to_string());
     std::thread::spawn(move || {
+        // Auditioning a voice belongs to the engine that owns it. Clicking play on a
+        // Kokoro row while Apple is active must say so, not play an Apple voice and
+        // imply the two are the same.
+        let refusal = {
+            let state = app.state::<AppState>();
+            let settings = state.settings.lock().unwrap();
+            selected_engine_refusal(&settings)
+        };
+        if let Some(reason) = refusal {
+            emit_status(&app, Phase::Error, Some(reason), None);
+            return;
+        }
         let speaker = &app.state::<AppState>().speaker;
         match speaker.speak(&sample, voice.as_deref(), rate) {
             Ok(()) => emit_status(&app, Phase::Speaking, Some("preview".to_string()), None),
@@ -215,6 +280,124 @@ fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<
 fn stop_speaking(app: AppHandle) {
     app.state::<AppState>().speaker.stop();
     emit_status(&app, Phase::Idle, None, None);
+}
+
+// ─────────────────────────── weight downloads ───────────────────────────
+
+/// Progress of a weight download, so the window can show it rather than a frozen button.
+/// `phase` is `downloading`, `done` or `error`.
+#[derive(Serialize, Clone)]
+struct InstallEvent {
+    engine: config::Engine,
+    phase: &'static str,
+    file: String,
+    done: u64,
+    total: u64,
+    message: Option<String>,
+}
+
+fn emit_install(
+    app: &AppHandle,
+    engine: config::Engine,
+    phase: &'static str,
+    file: &str,
+    done: u64,
+    total: u64,
+    message: Option<String>,
+) {
+    let _ = app.emit(
+        "kiegen:install",
+        InstallEvent {
+            engine,
+            phase,
+            file: file.to_string(),
+            done,
+            total,
+            message,
+        },
+    );
+}
+
+fn engine_label(engine: config::Engine) -> String {
+    engines::catalog(&Settings::default())
+        .into_iter()
+        .find(|info| info.id == engine)
+        .map(|info| info.label.to_string())
+        .unwrap_or_else(|| "this engine".to_string())
+}
+
+/// Kokoro's weights are plain files the app fetches and verifies itself. The MLX engines
+/// (Qwen, Chatterbox) keep their weights in the HuggingFace cache that their own Python
+/// runtime owns, so they have to be installed *by* that runtime — the app must not
+/// hand-place files into a cache layout it does not control.
+fn install_kokoro(app: &AppHandle) -> Result<(), String> {
+    let dir = engine_paths::kokoro_dir().ok_or("could not locate the app support directory")?;
+
+    // Emitting on every read would flood the IPC channel. A megabyte, or a new file, is
+    // plenty to keep a progress bar honest.
+    let mut emitted: u64 = 0;
+    let mut emitted_path = String::new();
+    let mut actual: u64 = 0;
+    let mut last_total: u64 = 0;
+
+    let mut on_progress = |path: &str, done: u64, total: u64| {
+        actual = done;
+        last_total = total;
+        if done.saturating_sub(emitted) >= 1 << 20 || path != emitted_path {
+            emitted = done;
+            emitted_path = path.to_string();
+            emit_install(
+                app,
+                config::Engine::Kokoro,
+                "downloading",
+                path,
+                done,
+                total,
+                None,
+            );
+        }
+    };
+
+    download::install_kokoro_into(&dir, &mut on_progress)?;
+    emit_install(
+        app,
+        config::Engine::Kokoro,
+        "done",
+        "",
+        actual,
+        last_total,
+        None,
+    );
+    Ok(())
+}
+
+fn install_engine_blocking(app: &AppHandle, engine: config::Engine) {
+    match engine {
+        // Already on the machine; nothing to fetch.
+        config::Engine::Apple => {}
+        config::Engine::Kokoro => {
+            if let Err(error) = install_kokoro(app) {
+                emit_install(app, engine, "error", "", 0, 0, Some(error));
+            }
+        }
+        other => emit_install(
+            app,
+            other,
+            "error",
+            "",
+            0,
+            0,
+            Some(format!(
+                "{} is installed by its own Python runtime, and that sidecar is not implemented yet",
+                engine_label(other)
+            )),
+        ),
+    }
+}
+
+#[tauri::command]
+fn install_engine(app: AppHandle, engine: config::Engine) {
+    std::thread::spawn(move || install_engine_blocking(&app, engine));
 }
 
 #[tauri::command]
@@ -336,6 +519,7 @@ pub fn run() {
             speak_text,
             preview_voice,
             stop_speaking,
+            install_engine,
             open_settings_window,
             open_accessibility_settings,
             permission_status,

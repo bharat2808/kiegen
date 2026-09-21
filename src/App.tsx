@@ -9,8 +9,75 @@ type CaptureMode = "ax_then_copy" | "ax_only" | "copy_only";
 
 type Voice = { name: string; locale: string; novelty: boolean };
 
+/** Which synthesis backend is selected. Mirrors the Rust `Engine` enum's wire format. */
+type EngineId = "apple" | "kokoro" | "qwen" | "chatterbox";
+
+/** One voice offered by whichever engine is active. */
+type EngineVoice = {
+  id: string;
+  label: string;
+  language: string;
+  /** Non-null when the engine cannot use this voice at all — shown, not selectable. */
+  unavailable: string | null;
+  note: string | null;
+};
+
+/** An engine, its voices, and — as the Rust side computes it — whether it can speak. */
+type EngineInfo = {
+  id: EngineId;
+  label: string;
+  summary: string;
+  can_speak: boolean;
+  status: string;
+  /** Full-sentence reason, used for the failed-shortcut message — never shown in the pane. */
+  blocked_reason: string | null;
+  needs_download: boolean;
+  download_bytes: number;
+  repo: string;
+  voices: EngineVoice[];
+  selected_voice: string;
+};
+
+type KokoroSettings = {
+  voice: string;
+  quant: string;
+  speed: number;
+  keep_warm: boolean;
+  idle_unload_minutes: number;
+};
+
+type QwenSettings = {
+  voice: string;
+  streaming_interval: number;
+  keep_warm: boolean;
+  python: string | null;
+};
+
+type ChatterboxSettings = {
+  voice: string;
+  exaggeration: number;
+  cfg_weight: number;
+  ref_audio: string | null;
+  keep_warm: boolean;
+  python: string | null;
+};
+
+/** Progress of a weight download, emitted by the Rust side as `kiegen:install`. */
+type InstallEvent = {
+  engine: EngineId;
+  phase: "downloading" | "done" | "error";
+  file: string;
+  done: number;
+  total: number;
+  message: string | null;
+};
+
 type Settings = {
   shortcuts: { speak: string; stop: string };
+  engine: EngineId;
+  kokoro: KokoroSettings;
+  qwen: QwenSettings;
+  chatterbox: ChatterboxSettings;
   voice: string | null;
   rate: number;
   capture_mode: CaptureMode;
@@ -21,6 +88,7 @@ type Settings = {
 type UiState = {
   settings: Settings;
   voices: Voice[];
+  engines: EngineInfo[];
   trusted: boolean;
   secure_input: boolean;
   speaking: boolean;
@@ -101,6 +169,11 @@ const Icon = {
     ico([
       "M8 4a.5.5 0 0 1 .5.5V6a.5.5 0 0 1-1 0V4.5A.5.5 0 0 1 8 4M3.732 5.732a.5.5 0 0 1 .707 0l.915.914a.5.5 0 1 1-.708.708l-.914-.915a.5.5 0 0 1 0-.707M2 10a.5.5 0 0 1 .5-.5h1.586a.5.5 0 0 1 0 1H2.5A.5.5 0 0 1 2 10m9.5 0a.5.5 0 0 1 .5-.5h1.5a.5.5 0 0 1 0 1H12a.5.5 0 0 1-.5-.5m.754-4.246a.39.39 0 0 0-.527-.02L7.547 9.31a.91.91 0 1 0 1.302 1.258l3.434-4.297a.39.39 0 0 0-.029-.518z",
       "M0 10a8 8 0 1 1 15.547 2.661c-.442 1.253-1.845 1.602-2.932 1.25C11.309 13.488 9.475 13 8 13c-1.474 0-3.31.488-4.615.911-1.087.352-2.49.003-2.932-1.25A8 8 0 0 1 0 10m8-7a7 7 0 0 0-6.603 9.329c.203.575.923.876 1.68.63C4.397 12.533 6.358 12 8 12s3.604.532 4.923.96c.757.245 1.477-.056 1.68-.631A7 7 0 0 0 8 3",
+    ]),
+  download: () =>
+    ico([
+      "M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5",
+      "M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z",
     ]),
   box: () =>
     ico([
@@ -185,6 +258,14 @@ const languageName = (locale: string) => LANGUAGE_NAMES[locale] ?? locale.replac
 
 /** `Eddy (English (US))` → `Eddy`: the locale column already says the language. */
 const voiceLabel = (name: string) => name.split(" (")[0].trim();
+
+/** Decimal units: these are download sizes for humans, not disk blocks. */
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "nothing";
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} kB`;
+  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+}
 
 /* ── shortcut capture ──────────────────────────────────────────────── */
 
@@ -296,8 +377,11 @@ function Row({
       role="button"
       tabIndex={disabled ? -1 : 0}
       aria-pressed={selected}
+      /* `:disabled` cannot match a div, so the attribute is what carries the state. */
+      aria-disabled={disabled ? true : undefined}
       onClick={disabled ? undefined : onSelect}
       onKeyDown={(event) => {
+        if (disabled) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onSelect();
@@ -343,6 +427,7 @@ export default function App() {
   const [showNovelty, setShowNovelty] = useState(false);
   const [recording, setRecording] = useState<"speak" | "stop" | null>(null);
   const [rateDraft, setRateDraft] = useState<number | null>(null);
+  const [install, setInstall] = useState<InstallEvent | null>(null);
   const rateTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -357,11 +442,18 @@ export default function App() {
   useEffect(() => {
     void refresh();
     const unlisten = listen<Status>("kiegen:status", (event) => setStatus(event.payload));
+    // Downloads report their own progress. When one ends, re-read the catalogue — whether
+    // an engine is installed is exactly what its badge shows.
+    const uninstall = listen<InstallEvent>("kiegen:install", (event) => {
+      setInstall(event.payload);
+      if (event.payload.phase !== "downloading") void refresh();
+    });
     // Permission is granted outside the app, and speech ends on its own: poll rather
     // than pretend we can observe either.
     const poll = window.setInterval(() => void refresh(), 2000);
     return () => {
       void unlisten.then((off) => off());
+      void uninstall.then((off) => off());
       window.clearInterval(poll);
     };
   }, [refresh]);
@@ -434,6 +526,38 @@ export default function App() {
     .sort((a, b) => (byLanguage.get(b)?.length ?? 0) - (byLanguage.get(a)?.length ?? 0));
   const exactLocaleMissing = voices.length > 0 && !byLanguage.has(systemLanguage);
 
+  /*
+   * Engine derivation. The catalogue arrives from Rust, so the picker needs no knowledge
+   * of which engines exist — and a voice's usability comes from the engine, never from a
+   * guess made here.
+   */
+  const engines = state?.engines ?? [];
+  const activeEngine = engines.find((entry) => entry.id === state?.settings.engine) ?? null;
+  const engineVoices = activeEngine?.voices ?? [];
+  const engineVoicesByLanguage = useMemo(() => {
+    const map = new Map<string, EngineVoice[]>();
+    for (const voice of engineVoices) {
+      const list = map.get(voice.language) ?? [];
+      list.push(voice);
+      map.set(voice.language, list);
+    }
+    for (const list of map.values()) {
+      // Usable voices first: the unusable ones are shown for completeness, not as choices.
+      list.sort(
+        (a, b) =>
+          Number(a.unavailable !== null) - Number(b.unavailable !== null) ||
+          a.label.localeCompare(b.label),
+      );
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineVoices]);
+
+  const engineVoiceCounts = {
+    usable: engineVoices.filter((voice) => voice.unavailable === null).length,
+    blocked: engineVoices.filter((voice) => voice.unavailable !== null).length,
+  };
+
   /* Keyboard recording for the shortcut rows. */
   useEffect(() => {
     if (!recording || !state) return;
@@ -486,6 +610,34 @@ export default function App() {
 
   const { settings } = state;
   const selectedVoice = voices.find((voice) => voice.name === settings.voice) ?? null;
+
+  /*
+   * Download progress, when the Rust side is fetching weights for the engine on screen.
+   * Keyed to the active engine so a background download for another one cannot post its
+   * bar under the wrong row.
+   */
+  const installForEngine = install && install.engine === settings.engine ? install : null;
+  const installing = installForEngine?.phase === "downloading";
+  const installPercent =
+    installForEngine && installForEngine.total > 0
+      ? Math.min(100, Math.round((installForEngine.done / installForEngine.total) * 100))
+      : 0;
+
+  /**
+   * Choosing a voice writes to whichever engine owns it. Apple's voices are top-level
+   * because they predate the engines; the local models each own their own section.
+   */
+  const saveEngineVoice = (id: string) => {
+    if (settings.engine === "kokoro") {
+      void save({ kokoro: { ...settings.kokoro, voice: id } });
+    } else if (settings.engine === "qwen") {
+      void save({ qwen: { ...settings.qwen, voice: id } });
+    } else if (settings.engine === "chatterbox") {
+      void save({ chatterbox: { ...settings.chatterbox, voice: id } });
+    } else {
+      void save({ voice: id });
+    }
+  };
 
   const statusLine =
     status.phase === "error"
@@ -632,10 +784,81 @@ export default function App() {
           <div className="pane-inner">
             <h1 className="pane-title">Voice</h1>
             <p className="pane-subtitle">
-              The voice kiegen reads with. {voices.length} installed on this Mac.
+              Which engine speaks, and which of its voices it uses.
             </p>
 
-            <Card title="Spoken voice" icon={Icon.speaker()}>
+            <Card title="Engine" icon={Icon.speaker()}>
+              <div className="row-stack">
+                {engines.map((engine) => (
+                  <Row
+                    key={engine.id}
+                    selected={settings.engine === engine.id}
+                    glyph={settings.engine === engine.id ? Icon.checkCircle() : Icon.circle()}
+                    title={engine.label}
+                    subtitle={engine.summary}
+                    badge={
+                      engine.can_speak
+                        ? "Ready"
+                        : engine.needs_download
+                          ? `Needs ${formatBytes(engine.download_bytes)}`
+                          : "Not ready"
+                    }
+                    onSelect={() => void save({ engine: engine.id })}
+                  />
+                ))}
+              </div>
+
+              {activeEngine && !activeEngine.can_speak ? (
+                <Note kind="warning" icon={Icon.warn()}>
+                  {activeEngine.status}
+                </Note>
+              ) : null}
+
+              {activeEngine?.needs_download ? (
+                <div className="field">
+                  <span className="field-label">Weights</span>
+                  {installing && installForEngine ? (
+                    <>
+                      <div className="progress">
+                        <div
+                          className="progress-bar"
+                          style={{ width: `${installPercent}%` }}
+                          role="progressbar"
+                          aria-valuenow={installPercent}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        />
+                      </div>
+                      <span className="field-hint">
+                        {installPercent}% · {formatBytes(installForEngine.done)} of{" "}
+                        {formatBytes(installForEngine.total)}
+                      </span>
+                    </>
+                  ) : (
+                    <div className="inline">
+                      <button
+                        className="plain"
+                        onClick={() =>
+                          void invoke("install_engine", { engine: settings.engine })
+                        }
+                      >
+                        {Icon.download()} Download {formatBytes(activeEngine.download_bytes)}
+                      </button>
+                    </div>
+                  )}
+                  {installForEngine?.phase === "error" ? (
+                    <Note kind="error" icon={Icon.xCircle()}>
+                      <span className="truncate" title={installForEngine.message ?? ""}>
+                        {installForEngine.message}
+                      </span>
+                    </Note>
+                  ) : null}
+                </div>
+              ) : null}
+            </Card>
+
+            {settings.engine === "apple" ? (
+              <Card title="Spoken voice" icon={Icon.speaker()}>
               <div className="field">
                 <span className="field-label">Language</span>
                 <select
@@ -749,8 +972,57 @@ export default function App() {
                   ? `Default: ${voiceLabel(selectedVoice.name)} (${selectedVoice.locale})`
                   : "Default: system voice"}
               </div>
-            </Card>
+              </Card>
+            ) : (
+              <Card title={`Voices — ${activeEngine?.label ?? ""}`} icon={Icon.speaker()}>
+                <div className="field">
+                  <span className="field-label">Voices</span>
+                  <span className="field-hint">
+                    {engineVoiceCounts.usable} usable
+                    {engineVoiceCounts.blocked > 0
+                      ? ` · ${engineVoiceCounts.blocked} not selectable`
+                      : ""}
+                  </span>
+                </div>
 
+                <div className="voice-list">
+                  {[...engineVoicesByLanguage.entries()].map(([groupLanguage, list]) => (
+                    <div key={groupLanguage}>
+                      <div className="group-heading">{groupLanguage}</div>
+                      <div className="row-stack" style={{ marginTop: 6 }}>
+                        {list.map((voice) => {
+                          const chosen = activeEngine?.selected_voice === voice.id;
+                          return (
+                            <Row
+                              key={voice.id}
+                              selected={chosen}
+                              glyph={chosen ? Icon.checkCircle() : Icon.circle()}
+                              title={voice.label}
+                              subtitle={
+                                voice.unavailable ??
+                                [voice.id, voice.note].filter(Boolean).join(" · ")
+                              }
+                              mono={voice.unavailable === null}
+                              disabled={voice.unavailable !== null}
+                              badge={chosen ? "Default" : undefined}
+                              onSelect={() => saveEngineVoice(voice.id)}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="card-note">
+                  {activeEngine?.selected_voice
+                    ? `Default: ${activeEngine.selected_voice}`
+                    : "No voice chosen yet."}
+                </div>
+              </Card>
+            )}
+
+            {settings.engine === "apple" ? (
             <Card title="Speed" icon={Icon.gauge()}>
               <div className="inline">
                 <input
@@ -772,10 +1044,92 @@ export default function App() {
                 />
                 <span className="mono">{rateDraft ?? settings.rate} wpm</span>
               </div>
-              <div className="card-note">
-                200 wpm is the default. Preview a voice to hear the difference.
-              </div>
             </Card>
+            ) : null}
+
+            {settings.engine === "kokoro" ? (
+              <Card title="Kokoro settings" icon={Icon.gauge()}>
+                <div className="field">
+                  <span className="field-label">Model precision</span>
+                  <select
+                    value={settings.kokoro.quant}
+                    onChange={(event) =>
+                      void save({ kokoro: { ...settings.kokoro, quant: event.target.value } })
+                    }
+                  >
+                    <option value="fp32">fp32 — 325 MB</option>
+                    <option value="fp16">fp16 — 163 MB</option>
+                    <option value="q8f16">q8f16 — 86 MB, about half the speed</option>
+                  </select>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Speed</span>
+                  <div className="inline">
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2}
+                      step={0.05}
+                      value={settings.kokoro.speed}
+                      onChange={(event) =>
+                        void save({
+                          kokoro: { ...settings.kokoro, speed: Number(event.target.value) },
+                        })
+                      }
+                    />
+                    <span className="mono">{settings.kokoro.speed.toFixed(2)}×</span>
+                  </div>
+                </div>
+
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.kokoro.keep_warm}
+                    onChange={(event) =>
+                      void save({
+                        kokoro: { ...settings.kokoro, keep_warm: event.target.checked },
+                      })
+                    }
+                  />
+                  <span>Keep the model loaded</span>
+                </label>
+              </Card>
+            ) : null}
+
+            {settings.engine === "qwen" ? (
+              <Card title="Qwen settings" icon={Icon.gauge()}>
+                <div className="field">
+                  <span className="field-label">Audio decoded per chunk</span>
+                  <select
+                    value={String(settings.qwen.streaming_interval)}
+                    onChange={(event) =>
+                      void save({
+                        qwen: {
+                          ...settings.qwen,
+                          streaming_interval: Number(event.target.value),
+                        },
+                      })
+                    }
+                  >
+                    <option value="0.32">0.32 s — 0.23 s to first audio (recommended)</option>
+                    <option value="0.16">0.16 s — 0.14 s, costs about 10% throughput</option>
+                    <option value="2">2.0 s — the library default, ~1.5 s to first audio</option>
+                  </select>
+                </div>
+
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.qwen.keep_warm}
+                    onChange={(event) =>
+                      void save({ qwen: { ...settings.qwen, keep_warm: event.target.checked } })
+                    }
+                  />
+                  <span>Keep the sidecar running</span>
+                </label>
+              </Card>
+            ) : null}
           </div>
         ) : null}
 

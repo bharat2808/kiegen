@@ -55,21 +55,89 @@ try:
 except Exception:
     system_language = "en_US"
 
+# The engine catalogue is produced by the real Rust code, so the preview cannot drift
+# from the app the moment a voice or an engine changes.
+catalog = subprocess.run(["cargo", "run", "--quiet", "--example", "engine_catalog"],
+                         cwd=root / "src-tauri", capture_output=True, text=True)
+if catalog.returncode != 0:
+    raise SystemExit("engine_catalog example failed:\n" + catalog.stderr[-800:])
+engines = json.loads(catalog.stdout)
+
 stub = """
 const VOICES = %s;
+const ENGINES = %s;
 const SYSTEM_LANGUAGE = %s;
 const state = {
-  settings: { shortcuts: { speak: "Cmd+Shift+S", stop: "Cmd+Shift+X" }, voice: null,
+  settings: { shortcuts: { speak: "Cmd+Shift+S", stop: "Cmd+Shift+X" },
+              engine: "apple",
+              kokoro: { voice: "af_heart", quant: "fp32", speed: 1.0,
+                        keep_warm: true, idle_unload_minutes: 30 },
+              qwen: { voice: "vivian", streaming_interval: 0.32, keep_warm: false, python: null },
+              voice: null,
               rate: 200, capture_mode: "ax_then_copy", max_chars: 5000, restore_clipboard: true },
-  voices: VOICES, trusted: false, secure_input: false, speaking: false,
+  voices: VOICES, engines: ENGINES, trusted: false, secure_input: false, speaking: false,
   refused_shortcuts: [], system_language: SYSTEM_LANGUAGE,
   config_path: "/Users/home/Library/Application Support/com.kiegen.app/settings.json"
 };
+const handlers = {};
 window.__TAURI_INTERNALS__ = {
   invoke: async (cmd, args) => {
     if (cmd === "get_state") return state;
-    if (cmd === "save_settings") { Object.assign(state.settings, (args || {}).settings || {}); return state; }
-    if (cmd === "plugin:event|listen" || cmd === "plugin:event|unlisten") return 1;
+    if (cmd === "save_settings") {
+      const patch = (args || {}).settings || {};
+      Object.assign(state.settings, patch);
+      // The real backend rebuilds the whole catalogue on every get_state, so mirror that
+      // here. Without it the "Default" badge in the preview would never move and the
+      // preview would disagree with the app.
+      state.engines = state.engines.map(e =>
+        e.id === "apple" ? Object.assign({}, e, { selected_voice: patch.voice || "" })
+        : e.id === "kokoro" ? Object.assign({}, e, { selected_voice: (patch.kokoro || {}).voice || e.selected_voice })
+        : e.id === "qwen" ? Object.assign({}, e, { selected_voice: (patch.qwen || {}).voice || e.selected_voice })
+        : e.id === "chatterbox" ? Object.assign({}, e, { selected_voice: (patch.chatterbox || {}).voice || e.selected_voice })
+        : e);
+      return state;
+    }
+    // Remember the callback Tauri would call, so a fake download can post progress at it.
+    if (cmd === "plugin:event|listen") {
+      handlers[(args || {}).event] = (args || {}).handler;
+      return 1;
+    }
+    if (cmd === "plugin:event|unlisten") return 1;
+    // Drives the real progress rendering with a scripted download, then flips the
+    // catalogue the same way the backend does once the weights are on disk.
+    if (cmd === "install_engine") {
+      const engine = (args || {}).engine;
+      const info = state.engines.find(e => e.id === engine) || {};
+      const handler = handlers["kiegen:install"];
+      // Mirror the backend: only Kokoro's weights are plain files the app fetches itself.
+      // The others are installed by their own Python runtime, which is not written yet, so
+      // the real app reports exactly this instead of pretending to download.
+      if (engine !== "kokoro") {
+        if (handler !== undefined) {
+          window["_" + handler]({ event: "kiegen:install", id: 0, payload: {
+            engine, phase: "error", file: "", done: 0, total: 0, message:
+            (info.label || engine) + " is installed by its own Python runtime, and that sidecar is not implemented yet" } });
+        }
+        return null;
+      }
+      const total = info.download_bytes || 1;
+      const file = "onnx/model.onnx";
+      let done = 0;
+      const tick = () => {
+        done = Math.min(total, done + total / 10);
+        const finished = done >= total;
+        if (handler !== undefined) {
+          window["_" + handler]({ event: "kiegen:install", id: 0, payload: {
+            engine, phase: finished ? "done" : "downloading", file,
+            done: Math.round(done), total, message: null } });
+        }
+        if (!finished) { setTimeout(tick, 140); return; }
+        state.engines = state.engines.map(e => e.id === engine
+          ? Object.assign({}, e, { needs_download: false, download_bytes: 0 }) : e);
+      };
+      tick();
+      return null;
+    }
     return null;
   },
   transformCallback: (cb) => { const id = Math.floor(Math.random() * 1e9); window["_" + id] = cb; return id; },
@@ -77,7 +145,8 @@ window.__TAURI_INTERNALS__ = {
   convertFileSrc: (p) => p
 };
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
-""" % (json.dumps(voices, ensure_ascii=False), json.dumps(system_language))
+""" % (json.dumps(voices, ensure_ascii=False), json.dumps(engines),
+       json.dumps(system_language))
 
 (preview / "index.html").write_text(
     '<!doctype html>\n<html lang="en"><head><meta charset="UTF-8">'
@@ -85,7 +154,8 @@ window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     f'<link rel="stylesheet" href="{css}"><script>{stub}</script></head>\n'
     f'<body><div id="root"></div><script type="module" src="{js}"></script></body></html>'
 )
-print(f"harness ready: {len(voices)} voices ({css}, {js})")
+print(f"harness ready: {len(voices)} Apple voices, {len(engines)} engines "
+      f"({', '.join(e['id'] + ':' + str(len(e['voices'])) for e in engines)}) ({css}, {js})")
 PY
 
 echo "serving $PREVIEW on http://127.0.0.1:$PORT"
