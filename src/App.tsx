@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 /* ── types mirroring the Rust side ─────────────────────────────────── */
@@ -10,7 +11,7 @@ type CaptureMode = "ax_then_copy" | "ax_only" | "copy_only";
 type Voice = { name: string; locale: string; novelty: boolean };
 
 /** Which synthesis backend is selected. Mirrors the Rust `Engine` enum's wire format. */
-type EngineId = "apple" | "kokoro" | "qwen" | "chatterbox";
+type EngineId = "apple" | "kokoro" | "chatterbox";
 
 /** One voice offered by whichever engine is active. */
 type EngineVoice = {
@@ -20,6 +21,15 @@ type EngineVoice = {
   /** Non-null when the engine cannot use this voice at all — shown, not selectable. */
   unavailable: string | null;
   note: string | null;
+};
+
+/** One reference clip a cloning engine can speak in. `id` is a file name, not a language. */
+type RefVoice = {
+  id: string;
+  label: string;
+  note: string;
+  /** The clip that ships with the weights: selectable, never deletable. */
+  builtin: boolean;
 };
 
 /** An engine, its voices, and — as the Rust side computes it — whether it can speak. */
@@ -35,6 +45,8 @@ type EngineInfo = {
   download_bytes: number;
   repo: string;
   voices: EngineVoice[];
+  /** Cloning engines only: the reference clips, built-in first. */
+  ref_voices: RefVoice[];
   selected_voice: string;
 };
 
@@ -46,20 +58,17 @@ type KokoroSettings = {
   idle_unload_minutes: number;
 };
 
-type QwenSettings = {
-  voice: string;
-  streaming_interval: number;
-  keep_warm: boolean;
-  python: string | null;
-};
-
+/**
+ * Chatterbox Multilingual's own section. `voice` is a language code, not a speaker:
+ * Chatterbox clones its speaker from a reference clip, so the only thing to choose is
+ * which of its languages to read in.
+ */
 type ChatterboxSettings = {
   voice: string;
   exaggeration: number;
   cfg_weight: number;
   ref_audio: string | null;
   keep_warm: boolean;
-  python: string | null;
 };
 
 /** Progress of a weight download, emitted by the Rust side as `kiegen:install`. */
@@ -76,7 +85,6 @@ type Settings = {
   shortcuts: { speak: string; stop: string };
   engine: EngineId;
   kokoro: KokoroSettings;
-  qwen: QwenSettings;
   chatterbox: ChatterboxSettings;
   voice: string | null;
   rate: number;
@@ -431,6 +439,9 @@ export default function App() {
   const [recording, setRecording] = useState<"speak" | "stop" | null>(null);
   const [rateDraft, setRateDraft] = useState<number | null>(null);
   const [install, setInstall] = useState<InstallEvent | null>(null);
+  // The last word from adding or deleting a reference voice. Kept rather than timed out: it is
+  // the only answer the user gets, and a refusal here is a reason, not a transient toast.
+  const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
   const rateTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -647,12 +658,52 @@ export default function App() {
   const saveEngineVoice = (id: string) => {
     if (settings.engine === "kokoro") {
       void save({ kokoro: { ...settings.kokoro, voice: id } });
-    } else if (settings.engine === "qwen") {
-      void save({ qwen: { ...settings.qwen, voice: id } });
     } else if (settings.engine === "chatterbox") {
+      // The id is a language code for Chatterbox, and the row renders that language's name
+      // from the catalogue — so the only thing stored here is the code.
       void save({ chatterbox: { ...settings.chatterbox, voice: id } });
     } else {
       void save({ voice: id });
+    }
+  };
+
+  /**
+   * Add a reference voice: the window picks the file, Rust copies it into the app's own store,
+   * and the catalogue comes back with the new row already in it. The dialog is the platform's
+   * own, so a refused clip is reported as a sentence rather than a swallowed click.
+   */
+  const addVoice = async () => {
+    setVoiceMessage(null);
+    let path: string | null = null;
+    try {
+      const picked = await open({
+        multiple: false,
+        title: "Add a reference voice",
+        filters: [{ name: "WAV audio", extensions: ["wav"] }],
+      });
+      path = typeof picked === "string" ? picked : null;
+    } catch (e) {
+      setVoiceMessage(String(e));
+      return;
+    }
+    if (!path) return;
+    try {
+      setState(await invoke<UiState>("add_chatterbox_voice", { path }));
+      setVoiceMessage("Voice added.");
+    } catch (e) {
+      setVoiceMessage(String(e));
+      void refresh();
+    }
+  };
+
+  const deleteVoice = async (file: string) => {
+    setVoiceMessage(null);
+    try {
+      setState(await invoke<UiState>("delete_chatterbox_voice", { file }));
+      setVoiceMessage("Voice deleted.");
+    } catch (e) {
+      setVoiceMessage(String(e));
+      void refresh();
     }
   };
 
@@ -1058,6 +1109,74 @@ export default function App() {
               </Card>
             )}
 
+            {/*
+              Reference voices. Chatterbox clones its speaker from a clip, so this is where the
+              user's own voices live: the shipped one, plus whatever they added from disk. Only
+              rendered for an engine that has any, which today means only Chatterbox.
+            */}
+            {(activeEngine?.ref_voices.length ?? 0) > 0 ? (
+              <Card title="Reference voice" icon={Icon.speaker()}>
+                <div className="field">
+                  <span className="field-label">Voice to clone</span>
+                  <span className="inline">
+                    <button className="plain" onClick={() => void addVoice()}>
+                      {Icon.download()} Add voice…
+                    </button>
+                  </span>
+                </div>
+
+                {voiceMessage ? (
+                  <Note kind="secondary" icon={Icon.info()}>
+                    <span className="truncate" title={voiceMessage}>
+                      {voiceMessage}
+                    </span>
+                  </Note>
+                ) : null}
+
+                <div className="row-stack">
+                  {activeEngine?.ref_voices.map((voice) => {
+                    const chosen =
+                      (settings.chatterbox.ref_audio ?? "") ===
+                      (voice.builtin ? "" : voice.id);
+                    return (
+                      <Row
+                        key={voice.id}
+                        selected={chosen}
+                        glyph={chosen ? Icon.checkCircle() : Icon.circle()}
+                        title={voice.label}
+                        subtitle={voice.note}
+                        badge={chosen ? "Default" : undefined}
+                        onSelect={() =>
+                          void save({
+                            chatterbox: {
+                              ...settings.chatterbox,
+                              ref_audio: voice.builtin ? null : voice.id,
+                            },
+                          })
+                        }
+                        trailing={
+                          voice.builtin ? undefined : (
+                            <button
+                              className="plain"
+                              title={`Delete ${voice.label}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void deleteVoice(voice.id);
+                              }}
+                            >
+                              Delete
+                            </button>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
+
+                <div className="card-note">5–15 s of clean speech works best.</div>
+              </Card>
+            ) : null}
+
             {settings.engine === "apple" ? (
             <Card title="Speed" icon={Icon.gauge()}>
               <div className="inline">
@@ -1133,36 +1252,37 @@ export default function App() {
               </Card>
             ) : null}
 
-            {settings.engine === "qwen" ? (
-              <Card title="Qwen settings" icon={Icon.gauge()}>
+            {settings.engine === "chatterbox" ? (
+              <Card title="Chatterbox settings" icon={Icon.gauge()}>
                 <div className="field">
-                  <span className="field-label">Audio decoded per chunk</span>
+                  <span className="field-label">Language</span>
                   <select
-                    value={String(settings.qwen.streaming_interval)}
+                    value={settings.chatterbox.voice}
                     onChange={(event) =>
                       void save({
-                        qwen: {
-                          ...settings.qwen,
-                          streaming_interval: Number(event.target.value),
-                        },
+                        chatterbox: { ...settings.chatterbox, voice: event.target.value },
                       })
                     }
                   >
-                    <option value="0.32">0.32 s — 0.23 s to first audio (recommended)</option>
-                    <option value="0.16">0.16 s — 0.14 s, costs about 10% throughput</option>
-                    <option value="2">2.0 s — the library default, ~1.5 s to first audio</option>
+                    {activeEngine?.voices.map((voice) => (
+                      <option key={voice.id} value={voice.id}>
+                        {voice.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
                 <label className="toggle-row">
                   <input
                     type="checkbox"
-                    checked={settings.qwen.keep_warm}
+                    checked={settings.chatterbox.keep_warm}
                     onChange={(event) =>
-                      void save({ qwen: { ...settings.qwen, keep_warm: event.target.checked } })
+                      void save({
+                        chatterbox: { ...settings.chatterbox, keep_warm: event.target.checked },
+                      })
                     }
                   />
-                  <span>Keep the sidecar running</span>
+                  <span>Keep the model loaded</span>
                 </label>
               </Card>
             ) : null}

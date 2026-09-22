@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Throwaway experiments under spikes/ get their own Cargo target directories; keeping the
+# source is the point, keeping a 700 MB build tree is not.
+spikes/*/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

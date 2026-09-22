@@ -1,13 +1,16 @@
 //! Which engine actually speaks, and what happens when one cannot.
 //!
-//! The app has two ways to make sound and they share almost nothing:
+//! The app has three ways to make sound and they share almost nothing:
 //!
 //! * **Apple system voices** — `/usr/bin/say` on a pipe, text straight in.
 //! * **Kokoro** — phonemes from the local front end, an ONNX graph, then a WAV.
+//! * **Chatterbox** — text through its own tokenizer, four ONNX graphs and a kv-cache loop,
+//!   with the speaker cloned from a reference clip.
 //!
 //! Kokoro does not accept text. It accepts phonemes, and the tables that produce them were
-//! fetched alongside the graph ([`crate::g2p`]). That is why this module exists at all: the
-//! piece that used to be missing was not a player, it was the text → phoneme step.
+//! fetched alongside the graph ([`crate::g2p`]). Chatterbox does accept text — its whole front
+//! end is a Llama BPE tokenizer — but it does not accept a *voice*: the speaker is a clip, so
+//! what this module hands it is a path.
 //!
 //! Two deliberate choices worth naming:
 //!
@@ -24,11 +27,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
+use crate::chatterbox::{self, Chatterbox};
 use crate::config::{Engine, Settings};
 use crate::engine_paths;
 use crate::g2p::G2p;
 use crate::kokoro::{self, Kokoro};
 use crate::speech::Speaker;
+use crate::voices;
 
 /// macOS ships this. Playing a file needs no crate, and it is already how the app treats
 /// `/usr/bin/say` — a system binary on a pipe rather than a library in the process.
@@ -69,10 +74,29 @@ struct Loaded {
     voice: String,
 }
 
+/// A loaded Chatterbox session plus the three things that would make it the wrong session.
+///
+/// Loading this engine is 1.5 GB and several seconds, so it is kept — but *every* input that
+/// changes the output is part of the key, including the emotion knob, which is an input to
+/// `embed_tokens` rather than a sampling parameter.
+struct ChatterboxLoaded {
+    engine: Chatterbox,
+    voice: String,
+    language: String,
+    exaggeration: String,
+}
+
+impl ChatterboxLoaded {
+    fn key(&self) -> String {
+        format!("{}|{}|{}", self.voice, self.language, self.exaggeration)
+    }
+}
+
 pub struct Spoken {
     /// The Apple path. Kept as its own type: it is the bootstrap engine and the default.
     speech: Speaker,
     kokoro: Mutex<Option<Loaded>>,
+    chatterbox: Mutex<Option<ChatterboxLoaded>>,
     /// The front end, loaded once. Re-reading 6 MB of JSON per utterance would be absurd.
     g2p: Mutex<Option<G2p>>,
     /// The player, so a second utterance cancels the first instead of talking over it.
@@ -82,6 +106,9 @@ pub struct Spoken {
     /// for pressing stop. This is the `keep_warm` setting, remembered from the last utterance
     /// because `stop` is not handed the settings.
     keep_warm: Mutex<bool>,
+    /// Whether the Chatterbox sessions survive a stop. Separate from Kokoro's: this engine is
+    /// 1.5 GB resident and both has to be the user's own decision.
+    chatterbox_keep_warm: Mutex<bool>,
 }
 
 impl Default for Spoken {
@@ -95,9 +122,11 @@ impl Spoken {
         Self {
             speech: Speaker::new(),
             kokoro: Mutex::new(None),
+            chatterbox: Mutex::new(None),
             g2p: Mutex::new(None),
             player: Mutex::new(None),
             keep_warm: Mutex::new(true),
+            chatterbox_keep_warm: Mutex::new(false),
         }
     }
 
@@ -105,17 +134,12 @@ impl Spoken {
     pub fn speak(&self, settings: &Settings, text: &str) -> Result<Report, String> {
         match settings.engine {
             Engine::Apple => self.speak_apple(text, settings.voice.as_deref(), settings.rate),
-            Engine::Kokoro => {
+            Engine::Kokoro | Engine::Chatterbox => {
                 let wav = self.wav_path()?;
                 let report = self.render(settings, text, &wav)?;
                 self.play(&wav)?;
                 Ok(report)
             }
-            other => Err(format!(
-                "{} cannot speak yet: it is installed by its own Python runtime and that \
-                 sidecar is not implemented",
-                engine_label(other)
-            )),
         }
     }
 
@@ -137,7 +161,15 @@ impl Spoken {
                 }
                 self.speak(&audition, text)
             }
-            other => Err(format!("{} cannot speak yet", engine_label(other))),
+            // Chatterbox's rows are languages, so auditioning one is auditioning a language —
+            // the reference clip stays whatever the user already chose.
+            Engine::Chatterbox => {
+                let mut audition = settings.clone();
+                if let Some(voice) = voice {
+                    audition.chatterbox.voice = voice.to_string();
+                }
+                self.speak(&audition, text)
+            }
         }
     }
 
@@ -153,29 +185,56 @@ impl Spoken {
         })
     }
 
-    /// Text → phonemes → audio → WAV at `path`, without playing it. This is what the
-    /// "speak to file" action will call, and what the integration test drives.
+    /// Text → audio → WAV at `path`, without playing it. This is what the "speak to file"
+    /// action will call, and what the integration tests drive.
+    ///
+    /// One path for both local engines: they differ in everything except the shape of this,
+    /// which is "turn text into 24 kHz mono and write it down".
     pub fn render(&self, settings: &Settings, text: &str, path: &Path) -> Result<Report, String> {
-        if settings.engine != Engine::Kokoro {
-            return Err(format!(
-                "rendering a file needs a local engine; {} writes audio itself",
-                engine_label(settings.engine)
-            ));
-        }
-        let dir = engine_paths::kokoro_dir().ok_or("cannot locate the app support directory")?;
-        if !engine_paths::kokoro_installed() {
-            return Err(
-                "Kokoro's files are not installed. Use Download in its engine card first."
-                    .to_string(),
-            );
-        }
+        let (samples, phoneme_count, dropped, rate) = match settings.engine {
+            Engine::Kokoro => {
+                let dir =
+                    engine_paths::kokoro_dir().ok_or("cannot locate the app support directory")?;
+                if !engine_paths::kokoro_installed() {
+                    return Err(
+                        "Kokoro's files are not installed. Use Download in its engine card first."
+                            .to_string(),
+                    );
+                }
+                let (samples, count, dropped) = self.synthesize_kokoro(&dir, settings, text)?;
+                (samples, count, dropped, kokoro::SAMPLE_RATE)
+            }
+            Engine::Chatterbox => {
+                let dir = engine_paths::chatterbox_dir()
+                    .ok_or("cannot locate the app support directory")?;
+                // The language gate is checked before the install check on purpose: it is a
+                // statement about what this build can do, and it is just as true before the
+                // weights are on disk. A user who picked Japanese should be told that, not
+                // told to download 1.5 GB that would not help.
+                chatterbox_language_guard(&settings.chatterbox.voice)?;
+                if !engine_paths::chatterbox_installed() {
+                    return Err(
+                        "Chatterbox's weights are not installed. Use Download in its engine card \
+                         first."
+                            .to_string(),
+                    );
+                }
+                let samples = self.synthesize_chatterbox(&dir, settings, text)?;
+                (samples, 0, Vec::new(), chatterbox::SAMPLE_RATE)
+            }
+            other => {
+                return Err(format!(
+                    "rendering a file needs a local engine; {} writes audio itself",
+                    engine_label(other)
+                ))
+            }
+        };
 
-        let (samples, phoneme_count, dropped) = self.synthesize(&dir, settings, text)?;
-        let seconds = samples.len() as f32 / kokoro::SAMPLE_RATE as f32;
+        let seconds = samples.len() as f32 / rate as f32;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
         }
-        kokoro::write_wav(path, &samples, kokoro::SAMPLE_RATE)?;
+        kokoro::write_wav(path, &samples, rate)?;
 
         Ok(Report {
             chars: text.chars().count(),
@@ -185,8 +244,72 @@ impl Spoken {
         })
     }
 
-    /// The synthesis core, separated from playback so it can be tested without a speaker.
-    fn synthesize(
+    /// Chatterbox's synthesis core: check the language and the clip, load (or reuse) the
+    /// sessions, run the graphs.
+    ///
+    /// The two refusals come *before* the load, deliberately. Both are cheap to detect and
+    /// both would otherwise be paid for with several seconds of graph loading followed by
+    /// garbage: an unsupported language, and a reference clip that is not on disk.
+    fn synthesize_chatterbox(
+        &self,
+        dir: &Path,
+        settings: &Settings,
+        text: &str,
+    ) -> Result<Vec<f32>, String> {
+        let language = settings.chatterbox.voice.clone();
+
+        let clip = voices::reference_path(dir, settings.chatterbox.ref_audio.as_deref());
+        if !clip.is_file() {
+            return Err(format!(
+                "the reference voice {:?} is not on disk; add it again or pick the built-in voice",
+                clip.file_name().unwrap_or_default()
+            ));
+        }
+
+        let exaggeration = settings.chatterbox.exaggeration;
+        *self.chatterbox_keep_warm.lock().unwrap() = settings.chatterbox.keep_warm;
+
+        let mut guard = self.chatterbox.lock().unwrap();
+        let loaded = ChatterboxLoaded {
+            voice: clip.to_string_lossy().into_owned(),
+            language: language.clone(),
+            exaggeration: format!("{exaggeration}"),
+            engine: Chatterbox::load(dir, exaggeration)?,
+        };
+        let stale = guard
+            .as_ref()
+            .is_none_or(|current| current.key() != loaded.key());
+        if stale {
+            *guard = Some(loaded);
+        }
+        let engine = &mut guard.as_mut().expect("just loaded").engine;
+        let utterance = engine.synthesize(text, &language, &clip)?;
+        eprintln!(
+            "[kiegen] chatterbox {} {:?}: {} steps, {} speech tokens, {:.2}s of audio in {:.2}s \
+             (encoder {:.2}s, loop {:.2}s, decoder {:.2}s)",
+            language,
+            clip.file_name().unwrap_or_default(),
+            utterance.steps,
+            utterance.speech_tokens,
+            utterance.seconds(),
+            utterance.encoder_seconds + utterance.loop_seconds + utterance.decoder_seconds,
+            utterance.encoder_seconds,
+            utterance.loop_seconds,
+            utterance.decoder_seconds,
+        );
+        if utterance.hit_max {
+            return Err(format!(
+                "Chatterbox ran out of steps after {} tokens without finishing the sentence; try \
+                 a shorter selection",
+                chatterbox::MAX_NEW_TOKENS
+            ));
+        }
+        Ok(utterance.samples)
+    }
+
+    /// The Kokoro synthesis core, separated from playback so it can be tested without a
+    /// speaker.
+    fn synthesize_kokoro(
         &self,
         dir: &Path,
         settings: &Settings,
@@ -278,6 +401,11 @@ impl Spoken {
         if !*self.keep_warm.lock().unwrap() {
             *self.kokoro.lock().unwrap() = None;
         }
+        // Chatterbox's sessions are 1.5 GB resident, so this is its own switch: a user may
+        // well want Kokoro kept warm and Chatterbox released.
+        if !*self.chatterbox_keep_warm.lock().unwrap() {
+            *self.chatterbox.lock().unwrap() = None;
+        }
     }
 
     pub fn is_speaking(&self) -> bool {
@@ -303,9 +431,29 @@ fn engine_label(engine: Engine) -> &'static str {
     match engine {
         Engine::Apple => "the Apple system voices",
         Engine::Kokoro => "Kokoro",
-        Engine::Qwen => "Qwen3-TTS",
         Engine::Chatterbox => "Chatterbox",
     }
+}
+
+/// Is this language one Chatterbox could read *here*?
+///
+/// Two of the 23 have no normaliser in this build, so the refusal names the language rather
+/// than handing the checkpoint text it was never trained to read. Checked before loading
+/// anything: the answer does not depend on what is on disk, so it must not cost 1.5 GB to
+/// find out.
+fn chatterbox_language_guard(language: &str) -> Result<(), String> {
+    if crate::engines::chatterbox_language(language).is_none() {
+        return Err(format!(
+            "'{language}' is not one of Chatterbox's 23 languages"
+        ));
+    }
+    if let Some(reason) = crate::engines::chatterbox_language_blocked(language) {
+        return Err(format!(
+            "Chatterbox cannot read {} yet: {reason}",
+            crate::engines::chatterbox_language(language).unwrap_or(language)
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,19 +462,53 @@ mod tests {
     use crate::config::Settings;
 
     #[test]
-    fn an_unimplemented_engine_refuses_instead_of_falling_back() {
+    fn an_engine_that_cannot_work_refuses_instead_of_falling_back() {
+        // Chatterbox is routed, not skipped. Two different refusals have to reach the user:
+        // the weights may be missing, and two of its languages may have no normaliser here.
         let settings = Settings {
-            engine: Engine::Qwen,
+            engine: Engine::Chatterbox,
             ..Default::default()
         };
         let spoken = Spoken::new();
         let error = spoken
             .speak(&settings, "hello")
-            .expect_err("Qwen has no sidecar yet, so this must not return success");
+            .expect_err("with no weights on disk this must not return success");
         assert!(
-            error.contains("sidecar"),
+            error.contains("Chatterbox"),
+            "the refusal should name the engine, got: {error}"
+        );
+        assert!(
+            error.contains("not installed"),
             "the refusal should name the missing piece, got: {error}"
         );
+
+        // A language code travels as far as the refusal: a user who picked Japanese is told
+        // about Japanese, not about a generic failure.
+        let japanese = Settings {
+            engine: Engine::Chatterbox,
+            chatterbox: crate::config::ChatterboxSettings {
+                voice: "ja".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = Spoken::new()
+            .speak(&japanese, "hello")
+            .expect_err("ja has no front end");
+        assert!(error.contains("Japanese"), "got: {error}");
+
+        let hebrew = Settings {
+            engine: Engine::Chatterbox,
+            chatterbox: crate::config::ChatterboxSettings {
+                voice: "he".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = Spoken::new()
+            .speak(&hebrew, "hello")
+            .expect_err("he has no front end");
+        assert!(error.contains("Hebrew"), "got: {error}");
     }
 
     #[test]

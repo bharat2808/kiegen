@@ -72,7 +72,8 @@ const state = {
               engine: "apple",
               kokoro: { voice: "af_heart", quant: "fp32", speed: 1.0,
                         keep_warm: true, idle_unload_minutes: 30 },
-              qwen: { voice: "vivian", streaming_interval: 0.32, keep_warm: false, python: null },
+              chatterbox: { voice: "en", exaggeration: 0.1, cfg_weight: 0.5,
+                            ref_audio: null, keep_warm: false },
               voice: null,
               rate: 200, capture_mode: "ax_then_copy", max_chars: 5000, restore_clipboard: true },
   voices: VOICES, engines: ENGINES, trusted: false, secure_input: false, speaking: false,
@@ -83,6 +84,8 @@ const handlers = {};
 window.__TAURI_INTERNALS__ = {
   invoke: async (cmd, args) => {
     if (cmd === "get_state") return state;
+    // The native picker, stubbed: a fixed path is enough to preview the "voice added" row.
+    if (cmd === "plugin:dialog|open") return "/Users/home/Documents/my_voice.wav";
     if (cmd === "save_settings") {
       const patch = (args || {}).settings || {};
       Object.assign(state.settings, patch);
@@ -92,7 +95,6 @@ window.__TAURI_INTERNALS__ = {
       state.engines = state.engines.map(e =>
         e.id === "apple" ? Object.assign({}, e, { selected_voice: patch.voice || "" })
         : e.id === "kokoro" ? Object.assign({}, e, { selected_voice: (patch.kokoro || {}).voice || e.selected_voice })
-        : e.id === "qwen" ? Object.assign({}, e, { selected_voice: (patch.qwen || {}).voice || e.selected_voice })
         : e.id === "chatterbox" ? Object.assign({}, e, { selected_voice: (patch.chatterbox || {}).voice || e.selected_voice })
         : e);
       return state;
@@ -103,20 +105,32 @@ window.__TAURI_INTERNALS__ = {
       return 1;
     }
     if (cmd === "plugin:event|unlisten") return 1;
+    // Add/delete a reference voice. The copy is Rust's job in the app; here it only has to
+    // move the catalogue so the list and the Delete buttons can be looked at.
+    if (cmd === "add_chatterbox_voice" || cmd === "delete_chatterbox_voice") {
+      const engine = state.engines.find(e => e.id === "chatterbox");
+      const existing = (engine && engine.ref_voices) || [];
+      const added = (args || {}).path ? String((args || {}).path).split("/").pop() : "clip.wav";
+      const voices = cmd === "add_chatterbox_voice"
+        ? existing.concat([{ id: added, label: added, note: "6.1 s of speech", builtin: false }])
+        : existing.filter(v => v.id !== (args || {}).file);
+      state.engines = state.engines.map(e => e.id === "chatterbox"
+        ? Object.assign({}, e, { ref_voices: voices }) : e);
+      return state;
+    }
     // Drives the real progress rendering with a scripted download, then flips the
     // catalogue the same way the backend does once the weights are on disk.
     if (cmd === "install_engine") {
       const engine = (args || {}).engine;
       const info = state.engines.find(e => e.id === engine) || {};
       const handler = handlers["kiegen:install"];
-      // Mirror the backend: only Kokoro's weights are plain files the app fetches itself.
-      // The others are installed by their own Python runtime, which is not written yet, so
-      // the real app reports exactly this instead of pretending to download.
-      if (engine !== "kokoro") {
+      // Mirror the backend: Kokoro and Chatterbox are both plain file sets the app fetches
+      // itself now, so either one can be scripted here.
+      if (engine !== "kokoro" && engine !== "chatterbox") {
         if (handler !== undefined) {
+          const message = (info.label || engine) + " has no weights the app installs";
           window["_" + handler]({ event: "kiegen:install", id: 0, payload: {
-            engine, phase: "error", file: "", done: 0, total: 0, message:
-            (info.label || engine) + " is installed by its own Python runtime, and that sidecar is not implemented yet" } });
+            engine, phase: "error", file: "", done: 0, total: 0, message } });
         }
         return null;
       }

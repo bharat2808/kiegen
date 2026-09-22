@@ -1,10 +1,11 @@
 //! Fetching model weights from HuggingFace into the app's data directory.
 //!
-//! Only engines whose weights are *plain files the app owns* go through here. The MLX
-//! engines (Qwen, Chatterbox) keep their weights inside the HuggingFace cache that their
-//! own Python runtime manages, so they must be installed *by* that runtime — hand-placing
-//! files into a cache layout we do not control is how you get a "downloaded" model that
-//! the library then cannot find.
+//! Both local engines' weights are *plain files the app owns*, and both come through here.
+//! That distinction used to matter: the MLX engines kept their weights inside a HuggingFace
+//! cache that their own Python runtime managed, so they had to be installed *by* that
+//! runtime — hand-placing files into a cache layout we do not control is how you get a
+//! "downloaded" model that the library then cannot find. That path went with Qwen3-TTS;
+//! Chatterbox Multilingual is now an ONNX export the app fetches and verifies itself.
 //!
 //! Design points, measured rather than assumed:
 //!
@@ -73,6 +74,37 @@ const LEXICON_FILES: [(&str, u64, &str); 2] = [
 /// repo also carries `voices/af.bin` at 524,288 bytes — 512 rows, absent from Kokoro's
 /// documented voice list — which is exactly why it is offered nowhere.
 const VOICE_BYTES: u64 = 522_240;
+
+/// Chatterbox Multilingual's ONNX export, pinned to the commit these sizes were read from:
+/// `onnx-community/chatterbox-multilingual-ONNX`, MIT and ungated.
+const CHATTERBOX_REPO: &str = "onnx-community/chatterbox-multilingual-ONNX";
+const CHATTERBOX_COMMIT: &str = "452d3f434aa592098f1eedac9099f33642ab2da5";
+
+/// The whole set, with the size the repository reports for each file, four graphs small-to-
+/// large.
+///
+/// The layout is the ONNX exporter's: each graph is a tiny `.onnx` whose weights sit in a
+/// sibling `*_onnx_data` blob, and neither half is usable alone — which is why both are
+/// listed and why the pair travels together. Only the language model has quantised variants
+/// (`q4f16` here); the encoder, the conditional decoder and the token embedding are fp32-only
+/// in this export, so 591 MB and 534 MB are not choices to shrink.
+///
+/// `default_voice.wav` is the reference clip the zero-shot path falls back to, and
+/// `Cangjie5_TC.json` is the Chinese character mapping the `zh` path needs (see
+/// docs/DESIGN.md §5) — fetched now so `zh` is not a second download later.
+const CHATTERBOX_FILES: [(&str, u64); 11] = [
+    ("tokenizer.json", 71_798),
+    ("Cangjie5_TC.json", 1_920_163),
+    ("default_voice.wav", 714_320),
+    ("onnx/embed_tokens.onnx", 13_286),
+    ("onnx/embed_tokens.onnx_data", 68_390_912),
+    ("onnx/language_model_q4f16.onnx", 229_388),
+    ("onnx/language_model_q4f16.onnx_data", 304_737_408),
+    ("onnx/conditional_decoder.onnx", 6_350_448),
+    ("onnx/conditional_decoder.onnx_data", 533_970_816),
+    ("onnx/speech_encoder.onnx", 1_184_608),
+    ("onnx/speech_encoder.onnx_data", 591_274_880),
+];
 
 /// One file to fetch. `url` is already resolved to a pinned commit.
 #[derive(Debug, Clone)]
@@ -160,6 +192,31 @@ pub fn kokoro_bytes() -> u64 {
     kokoro_plan()
         .map(|plan| plan.iter().map(|entry| entry.bytes).sum())
         .unwrap_or(0)
+}
+
+/// Everything Chatterbox Multilingual needs on disk, smallest first.
+///
+/// No `Result`, unlike Kokoro's plan: there is no availability rule that can remove a file
+/// here. The 23 languages live in one checkpoint and one tokenizer, so every entry is always
+/// required — the only thing that varies is which language code the user picked, and that is
+/// an argument to synthesis rather than a file to fetch.
+pub fn chatterbox_plan() -> Vec<Entry> {
+    CHATTERBOX_FILES
+        .iter()
+        .map(|(path, bytes)| Entry {
+            path: (*path).to_string(),
+            bytes: *bytes,
+            url: format!("{HF_BASE}/{CHATTERBOX_REPO}/resolve/{CHATTERBOX_COMMIT}/{path}"),
+            // HuggingFace reports a content sha256 in `x-linked-etag` for files this size,
+            // and `fetch` verifies against that when the plan carries none of its own.
+            sha256: None,
+        })
+        .collect()
+}
+
+/// Total bytes `chatterbox_plan` will fetch, derived the same way Kokoro's figure is.
+pub fn chatterbox_bytes() -> u64 {
+    chatterbox_plan().iter().map(|entry| entry.bytes).sum()
 }
 
 /// Splits `total` bytes into contiguous, inclusive ranges covering it exactly.
@@ -454,10 +511,36 @@ pub fn install_kokoro_into(
     on_progress: &mut dyn FnMut(&str, u64, u64),
 ) -> Result<(), String> {
     let plan = kokoro_plan()?;
+    install_plan_into(&plan, dir, on_progress)
+}
+
+/// Chatterbox's install: the same machinery, its own plan.
+///
+/// 1.5 GB across eleven files, four of which are the small halves of graph/weights pairs. The
+/// only thing that makes this different from Kokoro's is the size, which is why it shares
+/// `install_plan_into` rather than repeating it.
+pub fn install_chatterbox_into(
+    dir: &Path,
+    on_progress: &mut dyn FnMut(&str, u64, u64),
+) -> Result<(), String> {
+    let plan = chatterbox_plan();
+    install_plan_into(&plan, dir, on_progress)
+}
+
+/// Fetch a whole plan, reporting `(path, done, total)` as it goes.
+///
+/// The Tauri commands are thin wrappers that turn these reports into IPC events, so the part
+/// that actually decides what lands on disk is reachable from an integration test without an
+/// `AppHandle` — which is the only way to test it against real files.
+fn install_plan_into(
+    plan: &[Entry],
+    dir: &Path,
+    on_progress: &mut dyn FnMut(&str, u64, u64),
+) -> Result<(), String> {
     let total: u64 = plan.iter().map(|entry| entry.bytes).sum();
     let mut done: u64 = 0;
 
-    for entry in &plan {
+    for entry in plan {
         {
             let path = entry.path.as_str();
             let mut on_bytes = |delta: u64| {
@@ -696,5 +779,91 @@ mod tests {
         fetch(&entry, &dir, &mut |_| calls += 1).expect("a complete file is a no-op");
         assert_eq!(calls, 0);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every URL must name the pinned commit — the same rule Kokoro's plan is held to, and
+    /// for the same reason: a `/main/` URL would follow the repository forward and these
+    /// size checks would then start failing for unrelated reasons.
+    #[test]
+    fn every_chatterbox_url_is_pinned_to_a_commit() {
+        let plan = chatterbox_plan();
+        assert!(!plan.is_empty());
+        for entry in &plan {
+            let pinned = entry
+                .url
+                .split('/')
+                .any(|part| part.len() == 40 && part.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(pinned, "{} is not pinned: {}", entry.path, entry.url);
+            assert!(!entry.url.contains("/main/"), "{}", entry.url);
+            assert!(
+                entry.url.ends_with(&entry.path),
+                "{} does not end in its own path: {}",
+                entry.path,
+                entry.url
+            );
+        }
+    }
+
+    /// The four graphs, and both halves of each. A plan carrying a `.onnx` without its
+    /// `*_onnx_data` yields a graph that loads and then fails, so the pairs are asserted
+    /// rather than the count alone.
+    #[test]
+    fn the_chatterbox_plan_covers_every_graph_with_its_weights() {
+        let plan = chatterbox_plan();
+        let paths: Vec<&str> = plan.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(
+            plan.len(),
+            11,
+            "4 graphs x 2 halves + tokenizer + Cangjie mapping + voice clip"
+        );
+
+        for graph in [
+            "onnx/embed_tokens",
+            "onnx/language_model_q4f16",
+            "onnx/conditional_decoder",
+            "onnx/speech_encoder",
+        ] {
+            let head = format!("{graph}.onnx");
+            let data = format!("{graph}.onnx_data");
+            let at = paths
+                .iter()
+                .position(|path| *path == head)
+                .unwrap_or_else(|| panic!("{head} missing"));
+            assert_eq!(paths[at + 1], data, "the weights must follow their graph");
+        }
+
+        // The text front end and the zero-shot fallback clip are part of the install too.
+        for required in ["tokenizer.json", "Cangjie5_TC.json", "default_voice.wav"] {
+            assert!(paths.contains(&required), "{required} missing");
+        }
+
+        // Only the language model has quantised variants in this export, so nothing else may
+        // be fetched in a quantised spelling the repository does not have.
+        let quantised = paths
+            .iter()
+            .filter(|path| path.contains("_q4") || path.contains("_fp16"))
+            .count();
+        assert_eq!(
+            quantised, 2,
+            "the q4f16 language model pair, and nothing else"
+        );
+        assert!(paths.iter().all(|path| {
+            !(path.contains("_q4") || path.contains("_fp16"))
+                || path.contains("language_model_q4f16")
+        }));
+
+        // Cheap first: a failure on a 71 kB file must not wait behind 1.4 GB of graphs.
+        assert_eq!(paths.first(), Some(&"tokenizer.json"));
+    }
+
+    /// The byte total the UI shows is derived from the plan, so it cannot drift from the
+    /// work: 11 files, 1,508,858,027 bytes, and the pane's "Download 1.5 GB" comes from here
+    /// rather than from this comment.
+    #[test]
+    fn the_chatterbox_byte_total_matches_the_plan() {
+        let total: u64 = CHATTERBOX_FILES.iter().map(|(_, bytes)| *bytes).sum();
+        assert_eq!(total, 1_508_858_027);
+        assert_eq!(chatterbox_bytes(), total);
+        assert_eq!(chatterbox_plan().len(), CHATTERBOX_FILES.len());
     }
 }

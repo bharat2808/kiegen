@@ -1,0 +1,30 @@
+[package]
+name = "chatterbox-onnx-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Throwaway spike crate. See README.md. Do not ship.
+#
+# `ort` feature set: std + download-binaries (vendors ONNX Runtime 1.28 at build
+# time) + tls-rustls (matches the app's choice) + half (needed to create/read f16
+# tensors — the q4f16 graphs declare their KV-cache I/O as tensor(float16)).
+[dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "half",
+] }
+half = "2.1"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+hound = "3.5"
+anyhow = "1"
+
+# Optimizations on for the dev profile too: this is a perf measurement.
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+codegen-units = 1

@@ -43,9 +43,9 @@ impl Default for Shortcuts {
 /// Which synthesis backend to use.
 ///
 /// Apple is the default deliberately: it is the only engine that is already installed on
-/// every Mac and speaks instantly. Kokoro needs a one-time ~325 MB model fetch and Qwen
-/// needs ~2 GB plus a Python runtime, so neither can be what a first-run user hits — the
-/// app has to be useful before any download happens.
+/// every Mac and speaks instantly. Kokoro needs a one-time ~346 MB model fetch and
+/// Chatterbox ~1.5 GB, so neither can be what a first-run user hits — the app has to be
+/// useful before any download happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Engine {
@@ -56,12 +56,10 @@ pub enum Engine {
     /// Local Kokoro-82M over ONNX. Opt-in: `MIT OR Apache-2.0` and no espeak, but the
     /// weights are a separate download and never ship inside the bundle.
     Kokoro,
-    /// Local Qwen3-TTS 0.6B via MLX. Opt-in and heavy (~2 GB weights plus a Python
-    /// sidecar); measured at 0.23 s to first audio and RTF 0.7–0.9 on an M4.
-    Qwen,
-    /// Local Chatterbox (Resemble AI) via MLX. MIT, and — unlike Kokoro's non-English
-    /// voices — its text front end needs no espeak, so it can cover languages this build
-    /// otherwise cannot. Costs ~3 GB including its speech tokenizer.
+    /// Local Chatterbox **Multilingual** (Resemble AI) over ONNX. MIT, 23 languages, and —
+    /// unlike Kokoro's non-English voices — its text front end needs no espeak, so it covers
+    /// languages this build otherwise cannot. ~1.5 GB including its four graphs and the
+    /// Chinese character mapping.
     Chatterbox,
 }
 
@@ -95,64 +93,40 @@ impl Default for KokoroSettings {
     }
 }
 
-/// Qwen3-TTS settings. `streaming_interval` is the one number that matters: the library
-/// default is 2.0 seconds of audio per yield, which puts time-to-first-audio at ~1.5 s,
-/// while 0.32 reaches first audio in ~0.23 s and still sustains RTF 0.64.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct QwenSettings {
-    /// Preset speaker name, e.g. `vivian`. `get_supported_speakers()` lists nine.
-    pub voice: String,
-    /// Seconds of audio decoded per yielded chunk. Lower = faster start, slower overall.
-    pub streaming_interval: f32,
-    /// Keep the sidecar process (and the 1.1 GB of weights) resident.
-    pub keep_warm: bool,
-    /// Interpreter for the sidecar. `None` = detect from the app's managed venv.
-    pub python: Option<String>,
-}
-
-impl Default for QwenSettings {
-    fn default() -> Self {
-        Self {
-            voice: "vivian".to_string(),
-            streaming_interval: 0.32,
-            keep_warm: false,
-            python: None,
-        }
-    }
-}
-
 /// Chatterbox settings. Its signature control is `exaggeration`: emotion intensity, the
 /// one knob that changes *how* a line is read rather than merely how fast. Defaults are
 /// the values in the model's own `generate` signature, not guesses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChatterboxSettings {
-    /// Chatterbox is a zero-shot voice-cloning model, so there is one built-in voice and
-    /// custom ones come from `ref_audio` rather than a speaker list.
+    /// A language code from Chatterbox Multilingual's own table — `en`, `ja`, `zh`… The
+    /// model is a zero-shot voice *cloner*, so the speaker comes from `ref_audio` rather
+    /// than from a speaker name, and the one thing the user picks here is which of its 23
+    /// languages to read.
     pub voice: String,
     /// Emotion intensity, 0.0–1.0. Library default is 0.1 (flat, neutral).
     pub exaggeration: f32,
     /// Classifier-free guidance weight. Library default 0.5.
     pub cfg_weight: f32,
-    /// Reference clip to clone. Not implemented yet — cloning needs an audio loader and a
-    /// way for the user to pick a file, which this build does not have.
+    /// Which reference clip to clone: a file name inside the engine's own `voices/`
+    /// directory, or `None` for the clip that ships with the weights. Managed through
+    /// `voices.rs` rather than edited by hand — a value that is not a stored clip is
+    /// reported at synthesis rather than quietly replaced with the default.
     pub ref_audio: Option<String>,
-    /// Keep the sidecar process (and the weights) resident.
+    /// Keep the model loaded between utterances.
     pub keep_warm: bool,
-    /// Interpreter for the sidecar. `None` = detect from the app's managed venv.
-    pub python: Option<String>,
 }
 
 impl Default for ChatterboxSettings {
     fn default() -> Self {
         Self {
-            voice: "default".to_string(),
+            // English, because that is what a fresh install can be read in and who the
+            // default voice clip speaks.
+            voice: "en".to_string(),
             exaggeration: 0.1,
             cfg_weight: 0.5,
             ref_audio: None,
             keep_warm: false,
-            python: None,
         }
     }
 }
@@ -164,7 +138,6 @@ pub struct Settings {
     /// Which engine speaks. Apple unless the user opts into a local model.
     pub engine: Engine,
     pub kokoro: KokoroSettings,
-    pub qwen: QwenSettings,
     pub chatterbox: ChatterboxSettings,
     /// macOS voice name (`say -v ?`). `None` = system default voice. Apple engine only.
     pub voice: Option<String>,
@@ -183,7 +156,6 @@ impl Default for Settings {
             shortcuts: Shortcuts::default(),
             engine: Engine::default(),
             kokoro: KokoroSettings::default(),
-            qwen: QwenSettings::default(),
             chatterbox: ChatterboxSettings::default(),
             voice: None,
             rate: 200,
@@ -256,21 +228,37 @@ mod tests {
         assert_eq!(settings.max_chars, 4000);
         // Engine sections the file never mentioned arrive at their defaults.
         assert_eq!(settings.kokoro.voice, "af_heart");
-        assert_eq!(settings.qwen.streaming_interval, 0.32);
+        assert_eq!(settings.chatterbox.voice, "en");
         assert_eq!(settings.chatterbox.exaggeration, 0.1);
         assert!(settings.chatterbox.ref_audio.is_none());
     }
 
+    /// A config that names the engine this build no longer has — Qwen3-TTS, dropped along
+    /// with its Python sidecar — must not wedge the app. Serde refuses the variant, `load`
+    /// falls back to the defaults, and the user gets a working tray rather than a config
+    /// error they cannot act on. The rest of that file is lost with it, which is the honest
+    /// trade for an engine that no longer exists.
+    #[test]
+    fn a_config_naming_the_removed_engine_falls_back_to_defaults() {
+        let legacy = r#"{ "engine": "qwen", "qwen": { "voice": "ryan" }, "rate": 190 }"#;
+        assert!(
+            serde_json::from_str::<Settings>(legacy).is_err(),
+            "an engine this build does not have must not parse as one"
+        );
+        // Which is exactly what `load` turns into the defaults.
+        assert_eq!(Settings::default().engine, Engine::Apple);
+    }
+
     /// The same rule for an engine added last: naming one section must not disturb another.
     #[test]
-    fn a_chatterbox_section_does_not_disturb_qwen() {
+    fn a_chatterbox_section_keeps_its_other_defaults() {
         let json = r#"{ "engine": "chatterbox", "chatterbox": { "exaggeration": 0.7 } }"#;
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.engine, Engine::Chatterbox);
         assert_eq!(settings.chatterbox.exaggeration, 0.7);
         // Untouched neighbours keep their measured-good values.
         assert_eq!(settings.chatterbox.cfg_weight, 0.5);
-        assert_eq!(settings.qwen.streaming_interval, 0.32);
+        assert_eq!(settings.chatterbox.voice, "en");
         assert_eq!(settings.kokoro.voice, "af_heart");
     }
 
@@ -279,7 +267,6 @@ mod tests {
         for (engine, wire) in [
             (Engine::Apple, "\"apple\""),
             (Engine::Kokoro, "\"kokoro\""),
-            (Engine::Qwen, "\"qwen\""),
             (Engine::Chatterbox, "\"chatterbox\""),
         ] {
             let settings = Settings {
@@ -296,11 +283,13 @@ mod tests {
     /// A partially-written engine section must not wipe the fields it omits.
     #[test]
     fn a_partial_engine_section_keeps_its_other_defaults() {
-        let json = r#"{ "engine": "qwen", "qwen": { "voice": "ryan" } }"#;
+        let json = r#"{ "engine": "chatterbox", "chatterbox": { "voice": "sw" } }"#;
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(settings.engine, Engine::Qwen);
-        assert_eq!(settings.qwen.voice, "ryan");
-        // The measured-good latency setting survives even though the file omitted it.
-        assert_eq!(settings.qwen.streaming_interval, 0.32);
+        assert_eq!(settings.engine, Engine::Chatterbox);
+        assert_eq!(settings.chatterbox.voice, "sw");
+        // The values the file omitted survive — including the emotion knob, which is the one
+        // the library's own signature sets and therefore not a field to guess at.
+        assert_eq!(settings.chatterbox.exaggeration, 0.1);
+        assert_eq!(settings.chatterbox.cfg_weight, 0.5);
     }
 }

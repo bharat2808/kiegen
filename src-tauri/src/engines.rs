@@ -1,8 +1,8 @@
 //! The engine catalogue: every synthesis backend, its voices, and — stated plainly —
 //! whether it can actually speak yet.
 //!
-//! This is the only place that knows what a "Kokoro voice" or a "Qwen speaker" is, so the
-//! settings UI can render all three engines from data instead of hard-coding lists in
+//! This is the only place that knows what a "Kokoro voice" or a "Chatterbox language" is,
+//! so the settings UI can render every engine from data instead of hard-coding lists in
 //! TypeScript. The `can_speak` flag is deliberately honest rather than aspirational: an
 //! engine whose front end does not exist is selectable and its choice persists, but the UI
 //! is told it cannot speak, so it can say why instead of failing at the shortcut.
@@ -13,15 +13,13 @@ use crate::config::{Engine, Settings};
 
 /// Weights are fetched from HuggingFace, never bundled — see docs/DESIGN.md §4.
 pub const KOKORO_REPO: &str = "onnx-community/Kokoro-82M-v1.0-ONNX";
-pub const QWEN_REPO: &str = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit";
-pub const QWEN_WEIGHTS_BYTES: u64 = 2_070_000_000; // measured: 1974 MB, 8-bit
 
-/// Chatterbox needs its speech tokenizer as a separate repo, so the install is two repos.
-/// Upstream (`ResembleAI/chatterbox`) is MIT and — unlike Kokoro — carries no phonemiser at
-/// all: its text path is a Llama BPE tokenizer, so there is no espeak in it to avoid.
-pub const CHATTERBOX_REPO: &str = "mlx-community/chatterbox-fp16";
-pub const CHATTERBOX_TOKENIZER_REPO: &str = "mlx-community/S3TokenizerV2";
-pub const CHATTERBOX_WEIGHTS_BYTES: u64 = 2_577_000_000 + 495_000_000;
+/// Chatterbox **Multilingual**, ONNX, MIT and ungated. One repository, where the
+/// English-only MLX pairing of `chatterbox-fp16` + `S3TokenizerV2` used to be two — the
+/// tokenizer ships in this one. Upstream (`ResembleAI/chatterbox`) is MIT and — unlike
+/// Kokoro — carries no phonemiser at all: its text path is a Llama BPE tokenizer, so there
+/// is no espeak in it to avoid, and no Python to run it.
+pub const CHATTERBOX_REPO: &str = "onnx-community/chatterbox-multilingual-ONNX";
 
 /// Bytes Kokoro needs on disk, derived from the download plan so the figure the UI shows is
 /// the figure actually fetched (the 325.5 MB graph, the tokenizer, and 28 voice tables).
@@ -29,11 +27,19 @@ fn kokoro_weights_bytes() -> u64 {
     crate::download::kokoro_bytes()
 }
 
+/// Chatterbox's total, derived the same way. It used to be a hand-written constant summing
+/// two MLX repositories, which is exactly the kind of figure that drifts once the plan
+/// changes — as it has.
+fn chatterbox_weights_bytes() -> u64 {
+    crate::download::chatterbox_bytes()
+}
+
 /// One selectable voice, whatever the engine calls it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct EngineVoice {
-    /// What gets written to the config: a `say` name, a Kokoro id, a Qwen speaker.
+    /// What gets written to the config: a `say` name, a Kokoro voice id, a Chatterbox
+    /// language code.
     pub id: String,
     /// Display name with the engine's own prefixes stripped.
     pub label: String,
@@ -42,6 +48,24 @@ pub struct EngineVoice {
     pub unavailable: Option<String>,
     /// Voice metadata the engine happens to know (Kokoro encodes gender in the id).
     pub note: Option<String>,
+}
+
+/// One reference clip a user can speak in, for an engine that clones rather than selects.
+///
+/// Separate from `EngineVoice` on purpose. For Chatterbox, `EngineVoice.id` is a *language*
+/// and `RefVoice.id` is a *file*: they are chosen independently, they persist in different
+/// fields, and collapsing them into one list would make a language look like a speaker.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RefVoice {
+    /// What `chatterbox.ref_audio` stores. The built-in clip's own file name.
+    pub id: String,
+    /// Shown in the row. A user's file name, capped to fit one line.
+    pub label: String,
+    /// Short metadata — how long the clip is.
+    pub note: String,
+    /// The shipped clip: shown, selectable, and not deletable.
+    pub builtin: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +87,8 @@ pub struct EngineInfo {
     pub download_bytes: u64,
     pub repo: &'static str,
     pub voices: Vec<EngineVoice>,
+    /// Cloning engines only; empty for the rest. Chatterbox's own voice list.
+    pub ref_voices: Vec<RefVoice>,
     /// The id currently chosen for this engine, so the UI can mark the row.
     pub selected_voice: String,
 }
@@ -284,82 +310,138 @@ pub fn espeak_language_for(voice: &str) -> Option<&'static str> {
     family_for(voice)?.espeak
 }
 
-// ───────────────────────────────── Qwen ─────────────────────────────────
+// ─────────────────────────────── Chatterbox ──────────────────────────────
 
-/// Qwen3-TTS CustomVoice preset speakers, read from the model's own `talker_config.spk_id`
-/// in the cached 8-bit checkpoint — not from documentation.
-const QWEN_SPEAKERS: &[(&str, &str)] = &[
-    ("serena", "Female"),
-    ("vivian", "Female"),
-    ("sohee", "Female"),
-    ("ono_anna", "Female"),
-    ("aiden", "Male"),
-    ("dylan", "Male"),
-    ("eric", "Male"),
-    ("ryan", "Male"),
-    ("uncle_fu", "Male"),
+/// Chatterbox Multilingual's language table, taken verbatim from Resemble AI's own
+/// `SUPPORTED_LANGUAGES` dict in `src/chatterbox/mtl_tts.py` — the codes and names exactly
+/// as published, in that order.
+///
+/// Languages rather than voices, because Chatterbox is a **zero-shot voice-cloning** model:
+/// the speaker comes from a reference clip, not from a speaker table. Offering a list of
+/// names here would be inventing voices the checkpoint does not have.
+pub const CHATTERBOX_LANGUAGES: &[(&str, &str)] = &[
+    ("ar", "Arabic"),
+    ("da", "Danish"),
+    ("de", "German"),
+    ("el", "Greek"),
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fi", "Finnish"),
+    ("fr", "French"),
+    ("he", "Hebrew"),
+    ("hi", "Hindi"),
+    ("it", "Italian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("ms", "Malay"),
+    ("nl", "Dutch"),
+    ("no", "Norwegian"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("sv", "Swedish"),
+    ("sw", "Swahili"),
+    ("tr", "Turkish"),
+    ("zh", "Chinese"),
 ];
 
-/// `ono_anna` → `Ono Anna`, `uncle_fu` → `Uncle Fu`. The id stays visible in the row's
-/// subtitle, so the label is free to be a name.
-fn qwen_label(id: &str) -> String {
-    id.split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// `en` → `English`. The synthesis path reports the language it was handed in words, and the
+/// settings pane shows a name for a stored code, so both need this lookup rather than a
+/// second copy of the table.
+pub fn chatterbox_language(code: &str) -> Option<&'static str> {
+    CHATTERBOX_LANGUAGES
+        .iter()
+        .find(|(candidate, _)| *candidate == code)
+        .map(|(_, name)| *name)
 }
 
-pub fn qwen_voices() -> Vec<EngineVoice> {
-    QWEN_SPEAKERS
+/// A language this build cannot read *correctly*, with the reason.
+///
+/// The reference normalises four languages before tokenizing: `zh` through a Cangjie
+/// conversion, `ja` through a kanji-to-hiragana reading, `he` through a diacritiser, and
+/// `ko` by decomposing syllables. Two of those are Python packages with trained models
+/// (`pykakasi`, `dicta_onnx`) and are not ported, so those two languages are **refused**
+/// rather than fed raw text the checkpoint was never trained to read. A model that accepts
+/// the text and produces plausible nonsense is worse than one that says it cannot.
+pub fn chatterbox_language_blocked(code: &str) -> Option<&'static str> {
+    match code {
+        "ja" => Some("Needs a Japanese reading front end"),
+        "he" => Some("Needs a Hebrew diacritiser"),
+        _ => None,
+    }
+}
+
+/// One selectable entry per language: the id is the code the runtime is handed, and the
+/// label is that language's own name, so a row reads as a language and a choice stores a
+/// code with no mapping in the UI.
+pub fn chatterbox_voices() -> Vec<EngineVoice> {
+    CHATTERBOX_LANGUAGES
         .iter()
-        .map(|(id, gender)| EngineVoice {
-            id: (*id).to_string(),
-            label: qwen_label(id),
-            language: "Multilingual".to_string(),
-            unavailable: None,
-            note: Some((*gender).to_string()),
+        .map(|(code, name)| EngineVoice {
+            id: (*code).to_string(),
+            label: (*name).to_string(),
+            language: (*name).to_string(),
+            unavailable: chatterbox_language_blocked(code).map(str::to_string),
+            // `zh` works, but through the reference's own no-segmenter path. Saying so is the
+            // difference between a degradation the user can see and one they cannot.
+            note: (*code == "zh").then(|| "No word segmentation".to_string()),
         })
         .collect()
 }
 
-// ─────────────────────────────── Chatterbox ──────────────────────────────
-
-/// Chatterbox is a **zero-shot voice-cloning** model: it has one built-in voice and custom
-/// voices come from a reference clip, not from a speaker table. Offering a nine-item list
-/// here would be inventing voices the checkpoint does not have.
-pub fn chatterbox_voices() -> Vec<EngineVoice> {
-    vec![EngineVoice {
-        id: "default".to_string(),
+/// The reference-clip list: the shipped clip first, then whatever the user has added.
+///
+/// Injected like the espeak flag rather than probed, so both states are assertable without
+/// a models directory on the machine running the test.
+pub fn chatterbox_ref_voices(clips: &[crate::voices::VoiceClip]) -> Vec<RefVoice> {
+    let mut voices = vec![RefVoice {
+        id: crate::voices::builtin_file().to_string(),
         label: "Built-in voice".to_string(),
-        language: "English".to_string(),
-        unavailable: None,
-        note: Some("Cloning not implemented yet".to_string()),
-    }]
+        note: "Ships with the model".to_string(),
+        builtin: true,
+    }];
+    voices.extend(clips.iter().map(|clip| RefVoice {
+        // The label is the file's own name without the extension — the user named it, so
+        // this is the only honest label — capped so it cannot break a one-line row.
+        id: clip.file.clone(),
+        label: label_for(&clip.file),
+        note: format!("{:.1}s", clip.seconds),
+        builtin: false,
+    }));
+    voices
+}
+
+/// `grandma_2.wav` → `grandma 2`, capped at 32 characters so the row stays one line.
+fn label_for(file: &str) -> String {
+    let stem = file.strip_suffix(".wav").unwrap_or(file);
+    let pretty = stem.replace('_', " ");
+    if pretty.chars().count() <= 32 {
+        return pretty;
+    }
+    let mut out: String = pretty.chars().take(30).collect();
+    out.push('…');
+    out
 }
 
 // ─────────────────────────────── catalogue ──────────────────────────────
 
 /// `engine_ready` is injected rather than probed here so this module stays testable
-/// without a 2 GB model on disk.
+/// without a gigabyte of weights on disk.
 pub fn catalog(settings: &Settings) -> Vec<EngineInfo> {
+    catalog_with(settings, crate::voices::list())
+}
+
+/// Same catalogue, with the user's clips injected.
+pub fn catalog_with(settings: &Settings, clips: Vec<crate::voices::VoiceClip>) -> Vec<EngineInfo> {
     let kokoro = kokoro_voices(crate::engine_paths::espeak_ng().is_some());
-    let qwen = qwen_voices();
     let chatterbox = chatterbox_voices();
+    let ref_voices = chatterbox_ref_voices(&clips);
 
     let kokoro_weights = crate::engine_paths::kokoro_installed();
-    let sidecar = crate::engine_paths::sidecar_python();
-    // A runtime without weights still needs the download, so both are required.
-    let qwen_set_up = sidecar.is_some() && crate::engine_paths::mlx_model_installed(QWEN_REPO);
-    // Chatterbox needs two repos: the model itself and its speech tokenizer.
-    let chatterbox_set_up = sidecar.is_some()
-        && crate::engine_paths::mlx_model_installed(CHATTERBOX_REPO)
-        && crate::engine_paths::mlx_model_installed(CHATTERBOX_TOKENIZER_REPO);
+    // Chatterbox's files are the app's own now, so this is a directory check like Kokoro's
+    // rather than a look into a cache layout somebody else owns. Whether it can *speak* is a
+    // separate question with a separate answer.
+    let chatterbox_weights = crate::engine_paths::chatterbox_installed();
 
     vec![
         EngineInfo {
@@ -373,6 +455,7 @@ pub fn catalog(settings: &Settings) -> Vec<EngineInfo> {
             download_bytes: 0,
             repo: "",
             voices: Vec::new(), // the Apple list is its own field; see `UiState::voices`
+            ref_voices: Vec::new(),
             selected_voice: settings.voice.clone().unwrap_or_default(),
         },
         EngineInfo {
@@ -407,40 +490,40 @@ pub fn catalog(settings: &Settings) -> Vec<EngineInfo> {
             },
             repo: KOKORO_REPO,
             voices: kokoro,
+            ref_voices: Vec::new(),
             selected_voice: settings.kokoro.voice.clone(),
         },
         EngineInfo {
-            id: Engine::Qwen,
-            label: "Qwen3-TTS 0.6B",
-            summary: "Local 0.6B model, 9 speakers",
-            can_speak: false,
-            status: "Sidecar missing".to_string(),
-            blocked_reason: Some(
-                "the Python sidecar is not implemented yet, so it cannot speak".to_string(),
-            ),
-            needs_download: !qwen_set_up,
-            download_bytes: if qwen_set_up { 0 } else { QWEN_WEIGHTS_BYTES },
-            repo: QWEN_REPO,
-            voices: qwen,
-            selected_voice: settings.qwen.voice.clone(),
-        },
-        EngineInfo {
             id: Engine::Chatterbox,
-            label: "Chatterbox",
-            summary: "Local 0.5B model, voice cloning",
-            can_speak: false,
-            status: "Sidecar missing".to_string(),
-            blocked_reason: Some(
-                "the Python sidecar is not implemented yet, so it cannot speak".to_string(),
-            ),
-            needs_download: !chatterbox_set_up,
-            download_bytes: if chatterbox_set_up {
+            label: "Chatterbox Multilingual",
+            summary: "Local 0.5B model, 23 languages",
+            // The front end is this module's own `chatterbox.rs`: it can genuinely speak once
+            // the four graphs, the tokenizer and a reference clip are on disk, so readiness is
+            // a file question like Kokoro's rather than a "not written yet" constant.
+            can_speak: chatterbox_weights,
+            status: if chatterbox_weights {
+                "Ready".to_string()
+            } else {
+                "Weights missing".to_string()
+            },
+            blocked_reason: if chatterbox_weights {
+                None
+            } else {
+                Some(
+                    "Chatterbox's weights are not installed yet. Use Download in its engine \
+                     card, then try the shortcut again."
+                        .to_string(),
+                )
+            },
+            needs_download: !chatterbox_weights,
+            download_bytes: if chatterbox_weights {
                 0
             } else {
-                CHATTERBOX_WEIGHTS_BYTES
+                chatterbox_weights_bytes()
             },
             repo: CHATTERBOX_REPO,
             voices: chatterbox,
+            ref_voices,
             selected_voice: settings.chatterbox.voice.clone(),
         },
     ]
@@ -568,35 +651,14 @@ mod tests {
         assert_eq!(kokoro_label("zm_yunxia"), "Yunxia");
     }
 
-    #[test]
-    fn qwen_labels_read_as_names() {
-        assert_eq!(qwen_label("ono_anna"), "Ono Anna");
-        assert_eq!(qwen_label("uncle_fu"), "Uncle Fu");
-        assert_eq!(qwen_label("vivian"), "Vivian");
-    }
-
-    /// Qwen's nine speakers come from the checkpoint's own `talker_config`, so the list
-    /// must match it exactly.
-    #[test]
-    fn qwen_offers_the_nine_checkpoint_speakers() {
-        let voices = qwen_voices();
-        assert_eq!(voices.len(), 9);
-        for id in [
-            "serena", "vivian", "uncle_fu", "ryan", "aiden", "ono_anna", "sohee", "eric", "dylan",
-        ] {
-            assert!(voices.iter().any(|v| v.id == id), "{id} missing");
-        }
-        assert!(voices.iter().all(|v| v.unavailable.is_none()));
-    }
-
     /// Apple is ready with nothing installed, and every engine that cannot speak must say why.
     /// Kokoro's readiness is not a constant any more — it depends on whether its files are on
     /// disk, which is the whole point of `can_speak`, so it is asserted in both directions.
-    /// Four engines: Apple, Kokoro, Qwen, Chatterbox.
+    /// Three engines: Apple, Kokoro, Chatterbox.
     #[test]
     fn an_engine_that_cannot_speak_always_says_why() {
         let catalog = catalog(&Settings::default());
-        assert_eq!(catalog.len(), 4);
+        assert_eq!(catalog.len(), 3);
         assert!(catalog[0].can_speak, "apple must be ready");
         assert!(catalog[0].blocked_reason.is_none());
 
@@ -642,7 +704,13 @@ mod tests {
     /// This test exists because the first draft of this screen was a wall of explanation.
     #[test]
     fn every_ui_string_is_one_short_line() {
-        for engine in catalog(&Settings::default()) {
+        // A user's own clip is the one string in this catalogue that is not written here, so
+        // it is exercised with an over-long file name rather than left to the built-in clip.
+        let clips = vec![crate::voices::VoiceClip {
+            file: format!("{}.wav", "a-very-long-voice-name-".repeat(4)),
+            seconds: 9.5,
+        }];
+        for engine in catalog_with(&Settings::default(), clips) {
             assert!(
                 engine.summary.len() <= 42,
                 "{:?} summary too long for a row: {}",
@@ -670,6 +738,27 @@ mod tests {
                         engine.id
                     );
                 }
+                if let Some(note) = &voice.note {
+                    assert!(
+                        note.len() <= 32,
+                        "{:?} voice note too long for a row: {note}",
+                        engine.id
+                    );
+                }
+            }
+            for voice in &engine.ref_voices {
+                assert!(
+                    voice.label.chars().count() <= 32,
+                    "{:?} clip label too long for a row: {}",
+                    engine.id,
+                    voice.label
+                );
+                assert!(
+                    voice.note.len() <= 24,
+                    "{:?} clip note too long for a row: {}",
+                    engine.id,
+                    voice.note
+                );
             }
         }
     }
@@ -679,26 +768,139 @@ mod tests {
         let settings = Settings::default();
         let catalog = catalog(&settings);
         let kokoro = catalog.iter().find(|e| e.id == Engine::Kokoro).unwrap();
-        let qwen = catalog.iter().find(|e| e.id == Engine::Qwen).unwrap();
+        let chatterbox = catalog.iter().find(|e| e.id == Engine::Chatterbox).unwrap();
         let apple = catalog.iter().find(|e| e.id == Engine::Apple).unwrap();
         assert_eq!(kokoro.voices.len(), 54);
-        assert_eq!(qwen.voices.len(), 9);
+        assert_eq!(chatterbox.voices.len(), 23);
         // Apple's 184 voices travel in their own `UiState` field, not here.
         assert!(apple.voices.is_empty());
     }
 
     /// Chatterbox clones from a reference clip instead of carrying a speaker table, so it
-    /// must be offered as exactly one voice. A longer list here would be fabricated.
+    /// must be offered as one entry per *language* — 23 of them, exactly the codes and names
+    /// Resemble publishes. A speaker list here would be fabricated.
+    ///
+    /// Two of the 23 are offered but marked unusable: the reference normalises `ja` and `he`
+    /// through trained Python models this build does not have, and handing the model raw text
+    /// it was never trained to read produces confident nonsense. `zh` is usable but carries a
+    /// note, because it runs without the word segmenter the reference uses.
     #[test]
-    fn chatterbox_offers_one_voice_not_an_invented_speaker_list() {
+    fn chatterbox_offers_one_entry_per_language_not_an_invented_speaker_list() {
         let voices = chatterbox_voices();
-        assert_eq!(voices.len(), 1);
-        assert_eq!(voices[0].id, "default");
-        assert!(voices[0].unavailable.is_none());
+        assert_eq!(voices.len(), 23);
+        for (voice, (code, name)) in voices.iter().zip(CHATTERBOX_LANGUAGES) {
+            assert_eq!(voice.id, *code, "the id is the code the runtime is handed");
+            assert_eq!(voice.label, *name);
+            assert_eq!(voice.language, *name);
+            assert_eq!(
+                voice.unavailable.is_some(),
+                matches!(*code, "ja" | "he"),
+                "{code} is marked unusable for the wrong reason"
+            );
+            assert_eq!(
+                voice.note.is_some(),
+                *code == "zh",
+                "{code} carries a note it should not"
+            );
+        }
         // And the catalogue carries it through, so the pane has something to render.
         let catalog = catalog(&Settings::default());
         let entry = catalog.iter().find(|e| e.id == Engine::Chatterbox).unwrap();
-        assert_eq!(entry.voices.len(), 1);
-        assert_eq!(entry.selected_voice, "default");
+        assert_eq!(entry.voices.len(), 23);
+        assert_eq!(entry.selected_voice, "en");
+    }
+
+    /// The two languages with no normaliser must refuse for a reason the user can read, and
+    /// every other language must be usable — a gate, not a blanket denial.
+    #[test]
+    fn only_the_languages_without_a_normaliser_are_marked_unusable() {
+        let unusable: Vec<&str> = chatterbox_voices()
+            .into_iter()
+            .filter(|voice| voice.unavailable.is_some())
+            .map(|voice| {
+                // Leaked deliberately: this is a test, and the ids are static by construction.
+                Box::leak(voice.id.into_boxed_str()) as &str
+            })
+            .collect();
+        assert_eq!(unusable, vec!["he", "ja"]);
+        for (code, _) in CHATTERBOX_LANGUAGES {
+            if matches!(*code, "ja" | "he") {
+                continue;
+            }
+            assert!(
+                chatterbox_language_blocked(code).is_none(),
+                "{code} must not be blocked"
+            );
+        }
+        // And the runtime agrees with the catalogue rather than keeping its own list.
+        for (code, name) in [("ja", "Japanese"), ("he", "Hebrew")] {
+            let error = crate::chatterbox::prepare_text("test", code, None).expect_err("refuses");
+            assert!(error.contains(name), "got: {error}");
+        }
+    }
+
+    /// The reference-clip list is the shipped clip plus the user's own, and it is what the
+    /// pane renders. A voice the user added must arrive with its length, and the built-in
+    /// one must be marked as not deletable.
+    #[test]
+    fn the_clip_list_is_the_builtin_plus_what_the_user_added() {
+        let clips = vec![
+            crate::voices::VoiceClip {
+                file: "grandma.wav".to_string(),
+                seconds: 7.25,
+            },
+            crate::voices::VoiceClip {
+                file: format!("{}.wav", "x".repeat(60)),
+                seconds: 12.0,
+            },
+        ];
+        let voices = chatterbox_ref_voices(&clips);
+        assert_eq!(voices.len(), 3);
+        assert!(voices[0].builtin);
+        assert_eq!(voices[0].id, crate::voices::builtin_file());
+        assert_eq!(voices[1].label, "grandma");
+        assert_eq!(voices[1].note, "7.2s");
+        assert!(!voices[1].builtin);
+        // A file name longer than a row is truncated rather than allowed to wrap.
+        assert!(voices[2].label.chars().count() <= 32);
+
+        // The catalogue carries them, and only Chatterbox has any.
+        let catalog = catalog_with(&Settings::default(), clips);
+        let chatterbox = catalog.iter().find(|e| e.id == Engine::Chatterbox).unwrap();
+        assert_eq!(chatterbox.ref_voices.len(), 3);
+        assert_eq!(
+            chatterbox
+                .ref_voices
+                .iter()
+                .filter(|voice| voice.builtin)
+                .count(),
+            1
+        );
+        for engine in catalog.iter().filter(|e| e.id != Engine::Chatterbox) {
+            assert!(
+                engine.ref_voices.is_empty(),
+                "{:?} must not offer reference clips",
+                engine.id
+            );
+        }
+    }
+
+    /// The codes matter more than the count: a config stores one and the runtime will be
+    /// handed one. Pinned against Resemble's own `SUPPORTED_LANGUAGES`, in its order.
+    #[test]
+    fn chatterbox_language_codes_are_the_published_set() {
+        let codes: Vec<&str> = CHATTERBOX_LANGUAGES.iter().map(|(code, _)| *code).collect();
+        assert_eq!(
+            codes,
+            vec![
+                "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms",
+                "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh"
+            ]
+        );
+        assert_eq!(chatterbox_language("en"), Some("English"));
+        assert_eq!(chatterbox_language("zh"), Some("Chinese"));
+        // A code the checkpoint does not support must not resolve to a name: the row would
+        // then look like a language the engine could be handed, and nothing would notice.
+        assert_eq!(chatterbox_language("xx"), None);
     }
 }

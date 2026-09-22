@@ -5,6 +5,7 @@
 //! the Rust service below; the webview is a config editor.
 
 mod capture;
+pub mod chatterbox;
 pub mod config;
 pub mod download;
 pub mod engine_paths;
@@ -17,6 +18,7 @@ pub mod numbers;
 mod shortcuts;
 mod speech;
 pub mod spoken;
+pub mod voices;
 
 use std::sync::Mutex;
 
@@ -332,20 +334,44 @@ fn emit_install(
     );
 }
 
-fn engine_label(engine: config::Engine) -> String {
-    engines::catalog(&Settings::default())
-        .into_iter()
-        .find(|info| info.id == engine)
-        .map(|info| info.label.to_string())
-        .unwrap_or_else(|| "this engine".to_string())
+/// Copy a user-chosen WAV into the app's own voice store, then report the new catalogue.
+///
+/// `path` is resolved by the window's file dialog, so this never prompts: a Rust command that
+/// blocks on a modal dialog is a command the UI cannot show progress for.
+#[tauri::command]
+fn add_chatterbox_voice(app: AppHandle, path: String) -> Result<UiState, String> {
+    voices::add(std::path::Path::new(&path))?;
+    Ok(ui_state(&app, Vec::new()))
 }
 
-/// Kokoro's weights are plain files the app fetches and verifies itself. The MLX engines
-/// (Qwen, Chatterbox) keep their weights in the HuggingFace cache that their own Python
-/// runtime owns, so they have to be installed *by* that runtime — the app must not
-/// hand-place files into a cache layout it does not control.
-fn install_kokoro(app: &AppHandle) -> Result<(), String> {
-    let dir = engine_paths::kokoro_dir().ok_or("could not locate the app support directory")?;
+/// Delete a stored reference clip, clearing the selection if it was the chosen one — a config
+/// naming a file that is gone would otherwise read as "the user picked something invalid".
+#[tauri::command]
+fn delete_chatterbox_voice(app: AppHandle, file: String) -> Result<UiState, String> {
+    voices::remove(&file)?;
+    {
+        let state = app.state::<AppState>();
+        let mut settings = state.settings.lock().unwrap();
+        if settings.chatterbox.ref_audio.as_deref() == Some(file.as_str()) {
+            settings.chatterbox.ref_audio = None;
+            let snapshot = settings.clone();
+            drop(settings);
+            config::save(&app, &snapshot)?;
+        }
+    }
+    Ok(ui_state(&app, Vec::new()))
+}
+
+/// Kokoro's and Chatterbox's weights are plain files the app fetches and verifies itself.
+/// Nothing here is installed by another runtime: the app owns every file it needs, which is
+/// what makes the local engines work with no Python on the machine at all.
+fn install_local_engine(app: &AppHandle, engine: config::Engine) -> Result<(), String> {
+    let dir = match engine {
+        config::Engine::Kokoro => engine_paths::kokoro_dir(),
+        config::Engine::Chatterbox => engine_paths::chatterbox_dir(),
+        config::Engine::Apple => return Ok(()),
+    }
+    .ok_or("could not locate the app support directory")?;
 
     // Emitting on every read would flood the IPC channel. A megabyte, or a new file, is
     // plenty to keep a progress bar honest.
@@ -360,28 +386,15 @@ fn install_kokoro(app: &AppHandle) -> Result<(), String> {
         if done.saturating_sub(emitted) >= 1 << 20 || path != emitted_path {
             emitted = done;
             emitted_path = path.to_string();
-            emit_install(
-                app,
-                config::Engine::Kokoro,
-                "downloading",
-                path,
-                done,
-                total,
-                None,
-            );
+            emit_install(app, engine, "downloading", path, done, total, None);
         }
     };
 
-    download::install_kokoro_into(&dir, &mut on_progress)?;
-    emit_install(
-        app,
-        config::Engine::Kokoro,
-        "done",
-        "",
-        actual,
-        last_total,
-        None,
-    );
+    match engine {
+        config::Engine::Kokoro => download::install_kokoro_into(&dir, &mut on_progress)?,
+        _ => download::install_chatterbox_into(&dir, &mut on_progress)?,
+    }
+    emit_install(app, engine, "done", "", actual, last_total, None);
     Ok(())
 }
 
@@ -389,23 +402,11 @@ fn install_engine_blocking(app: &AppHandle, engine: config::Engine) {
     match engine {
         // Already on the machine; nothing to fetch.
         config::Engine::Apple => {}
-        config::Engine::Kokoro => {
-            if let Err(error) = install_kokoro(app) {
+        config::Engine::Kokoro | config::Engine::Chatterbox => {
+            if let Err(error) = install_local_engine(app, engine) {
                 emit_install(app, engine, "error", "", 0, 0, Some(error));
             }
         }
-        other => emit_install(
-            app,
-            other,
-            "error",
-            "",
-            0,
-            0,
-            Some(format!(
-                "{} is installed by its own Python runtime, and that sidecar is not implemented yet",
-                engine_label(other)
-            )),
-        ),
     }
 }
 
@@ -492,6 +493,7 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -551,6 +553,8 @@ pub fn run() {
             stop_speaking,
             install_engine,
             install_espeak_ng,
+            add_chatterbox_voice,
+            delete_chatterbox_voice,
             open_settings_window,
             open_accessibility_settings,
             permission_status,

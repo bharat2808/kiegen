@@ -13,7 +13,7 @@ Yes, and it names an established category — this is a **macOS menu-bar agent /
 - a settings window is created on demand and destroyed on close
 - the "product" is a *service*: select text → chord → audio
 
-What distinguishes it from the category: the input is the OS-wide selection rather than text you pasted into the app, and the output is locally generated speech (Kokoro, English-only unless you accept GPL espeak-ng — §5).
+What distinguishes it from the category: the input is the OS-wide selection rather than text you pasted into the app, and the output is locally generated speech (Kokoro, English-only unless you accept GPL espeak-ng — plus Chatterbox Multilingual's 23 languages — §5).
 
 ---
 
@@ -353,6 +353,82 @@ Scaffolding for the spike lives in `/Users/home/.hermes/cache/scratch/kokoro_spi
 4. The first-run 86–163 MB download sits awkwardly against a "no setup required" promise — mitigate with `say` as the immediate degraded engine plus a tray progress row.
 5. Multilingual coverage is out of v1 by decision, and espeak-ng stays an arm's-length optional subprocess — so the licence surface of the repo stays `MIT OR Apache-2.0` no matter what the user installs.
 
+### The engine lineup after this change: `say`, Kokoro, and Chatterbox Multilingual
+
+Three engines, and none of them needs Python.
+
+**Qwen3-TTS is dropped.** One reason, and it is sufficient: its ten languages are a strict
+subset of Chatterbox Multilingual's twenty-three, so it added no coverage at all — and it
+was the only engine in the catalogue kept alive by a Python sidecar. Removing it is what
+makes the app zero-Python: `sidecar_python()` and the `KIEGEN_SIDECAR_PYTHON` env override
+that existed to find that interpreter are gone from `engine_paths.rs`, and so is the
+HuggingFace-cache probe the MLX engines used. Both remaining local engines are plain file
+sets under `~/Library/Application Support/kiegen/models/`, fetched and sha256-verified by
+the app itself.
+
+**Chatterbox is now Chatterbox *Multilingual*, over ONNX in Rust** —
+`onnx-community/chatterbox-multilingual-ONNX`, MIT and ungated, pinned by commit. It covers
+the 23 languages in Resemble's own `SUPPORTED_LANGUAGES` table (`ar` Arabic, `da` Danish,
+`de` German, `el` Greek, `en` English, `es` Spanish, `fi` Finnish, `fr` French, `he` Hebrew,
+`hi` Hindi, `it` Italian, `ja` Japanese, `ko` Korean, `ms` Malay, `nl` Dutch, `no` Norwegian,
+`pl` Polish, `pt` Portuguese, `ru` Russian, `sv` Swedish, `sw` Swahili, `tr` Turkish, `zh`
+Chinese), and the engine offers one selectable entry per language — the id is the code, the
+label is the language's name. It is a **zero-shot voice cloner**: the speaker comes from a
+reference clip (`default_voice.wav` ships in the repo as the fallback), not from a speaker
+table, which is exactly why the catalogue lists languages rather than named voices.
+
+The download is **11 files, 1,508,858,027 bytes (~1.5 GB)**, pinned to commit
+`452d3f43…` and asserted down to the byte in `download.rs`'s own tests. Each of the four
+graphs is a tiny `.onnx` plus a large `*_onnx_data` external-weights sidecar, and neither
+half loads without the other — so both are in the plan, always. Only the language model is
+quantised (`language_model_q4f16`, 305 MB); the speech encoder (592 MB), the conditional
+decoder (540 MB) and the token embedding (68 MB) are fp32-only in this export. The English-
+only `ResembleAI/chatterbox-turbo-ONNX` is not used anywhere any more.
+
+Three caveats, recorded rather than fixed:
+
+1. **This ONNX export is the V2-era multilingual model** — its base model is
+   `ResembleAI/chatterbox`. Resemble's current multilingual is **V3**, which exists in MLX
+   (`mlx-community/chatterbox-multilingual-v3`) but has **no ONNX export yet**. So this
+   choice is one model generation behind on quality, and it is deliberate: it is the only
+   multilingual Chatterbox that runs without Python. When a V3 ONNX export appears, the
+   change is the repo constant plus the plan's byte table, nothing structural.
+2. **Two of the four language normalisers are not ported.** The reference implementation
+   normalises text before tokenizing for four codes: `zh` (Cangjie conversion via
+   `Cangjie5_TC.json` plus a character segmenter), `ja` (kanji → hiragana), `he` (add
+   diacritics) and `ko` (jamo → syllable composition). Of these, **`zh` and `ko` are ported**
+   in `chatterbox.rs`, and **`ja` and `he` are refused** — `[ja]` and `[he]` are gated off
+   with a sentence naming the language, checked *before* any graph is loaded, because a
+   kanji-to-kana dictionary and a Hebrew diacritiser are not something this build can
+   substitute with a guess. Gating is the honest option: the checkpoint would otherwise be
+   handed text it was never trained to read, and the failure mode would be a plausible-
+   looking utterance in the wrong reading rather than an error.
+3. **Voice cloning is a feature now.** Chatterbox is a zero-shot cloner, so the voice *is* a
+   reference clip; `ref_audio` names a file inside the engine's own `voices/` directory and
+   the shipped `default_voice.wav` is just the built-in entry. See §5.1.
+
+### 5.1 Reference voices (cloning)
+
+There is no speaker table anywhere in this checkpoint, so "choosing a voice" can only mean
+"choosing a clip". `voices.rs` owns that:
+
+| | |
+|---|---|
+| **Stored at** | `~/Library/Application Support/kiegen/models/chatterbox/voices/` — beside the weights, so deleting the engine deletes its voices with it |
+| **Named by** | the file name, slugged from what the user called it |
+| **Accepted** | a WAV of any rate or channel count: stereo is averaged down and any rate is linearly resampled to 24 kHz, which is what `speech_encoder` takes |
+| **Refused** | under 1 s or over 60 s of audio, empty, or not a readable WAV — with the reason in the message |
+| **Selected by** | `settings.chatterbox.ref_audio`, a file name; `null` means the shipped clip |
+| **Deleted by** | a Delete button on each row; the built-in clip has none |
+
+Adding is a Tauri file dialog for the *path* (`tauri-plugin-dialog`) followed by a Rust
+command that reads, validates, resamples and copies — the copy is the app's, not the
+window's, so a clip the user later moves or deletes does not take the voice with it.
+
+The Rust ONNX runtime for these four graphs landed with this change: `chatterbox.rs` holds
+the session, the KV cache and the generation loop, `spoken.rs` routes to it, and the engine
+is `can_speak: true` once its weights are on disk.
+
 ---
 
 ## 6. Tauri v2 wiring (verified against the installed crates)
@@ -407,7 +483,7 @@ Our own Rust pipeline on `ort` — **no third-party Kokoro crate** (licence-bloc
 voice blending, per-app overrides, HUD overlay, autostart, permissions health panel, keep-warm/idle-unload controls, speak-to-file.
 
 **v2**
-Services entry, auto-popup on mouse-up (Input Monitoring), multilingual plus the espeak-ng licence decision, history (opt-in).
+Services entry, auto-popup on mouse-up (Input Monitoring), history (opt-in). The multilingual question is answered by Chatterbox Multilingual (§5) rather than left open; the espeak-ng licence decision stands unchanged. Speaker cloning from a user-supplied clip is the remaining gap in the Chatterbox engine, and the Rust ONNX runtime for it is the next piece of work.
 
 Explicitly *not* in v0: history, streaming word-highlight, per-app shortcuts, themes, export/import.
 
@@ -416,6 +492,6 @@ Explicitly *not* in v0: history, streaming word-highlight, per-app shortcuts, th
 ## 9. Open product questions for you
 
 1. ~~Is kiegen closed-source/commercial?~~ **Decided: open source, `MIT OR Apache-2.0`** — the permissive option, with `cargo-deny` enforcing it so GPL cannot drift back in (§5).
-2. ~~English-only for v1, or the full 9 languages?~~ **Decided: English only for v1.** Mandarin/Japanese remain reachable later; the other five (Spanish, French, Hindi, Italian, Portuguese) are an optional user-installed espeak-ng path, documented, never shipped.
+2. ~~English-only for v1, or the full 9 languages?~~ **Decided: English only for v1.** Mandarin/Japanese remain reachable later; the other five (Spanish, French, Hindi, Italian, Portuguese) are an optional user-installed espeak-ng path, documented, never shipped. **Partly superseded:** a second engine — Chatterbox Multilingual — now offers 23 languages, none of them through espeak, so the "which languages" question is answered twice over: Kokoro's 9 codes, and Chatterbox's 23 for everything Kokoro cannot reach without GPL code (§5).
 3. Does the audio **play** and/or get **written to a file** by default? "Speak" vs "Speak to file" as separate chords is the plan.
 4. Should the user be able to configure **per-app** shortcuts/voices, or is one global chord enough for v1?

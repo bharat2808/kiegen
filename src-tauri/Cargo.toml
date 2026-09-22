@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+# The native file picker for adding a reference voice. The window asks Rust only for the
+# *path*, so the modal is the platform's own and the command that copies the file never blocks.
+tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2.3.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,7 +45,27 @@ sha2 = "0.10"
 # ONNX Runtime bindings for the opt-in Kokoro engine. `download-binaries` vendors the
 # runtime at build time so the engine works out of the box; switching to `load-dynamic`
 # would keep the base bundle small and move the runtime onto Kokoro's install path.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
+#
+# `half` is added for Chatterbox: its language model is quantised (MatMulNBits) and declares
+# its whole KV cache as `tensor(float16)`, so the cache tensors this code creates and feeds
+# back have to be f16. Without the feature there is no way to build one.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "half",
+] }
+# Chatterbox's text front end is a Llama BPE tokenizer, so it needs a real tokenizer rather
+# than Kokoro's character table. `onig` is off deliberately — it would drag a C library into a
+# bundle that ships none — but the crate will not build with *no* regex back end at all, so
+# `fancy-regex` (pure Rust, MIT) is the one it gets. This tokenizer's normalizer is a literal
+# string `Replace` and its pre-tokenizer is `Whitespace`, so no regex is ever constructed.
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+# WAV reading for reference voice clips, and for reading back what this engine wrote.
+hound = "3.5"
+# The f16 type behind the KV cache. `ort`'s `half` feature enables this same crate inside
+# ort; naming the type here is what lets this code construct a zero cache tensor.
+half = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
