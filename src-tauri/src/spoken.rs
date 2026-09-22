@@ -66,6 +66,14 @@ impl Report {
     }
 }
 
+/// Each streamed WAV lives only until its player exits or is stopped.
+struct StreamingWav(std::path::PathBuf);
+impl Drop for StreamingWav {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// A loaded Kokoro session plus what it was loaded for, so a voice change reloads and a
 /// repeat does not. Loading the 325 MB graph is worth caching; getting the voice wrong is
 /// worse than reloading.
@@ -84,12 +92,6 @@ struct ChatterboxLoaded {
     voice: String,
     language: String,
     exaggeration: String,
-}
-
-impl ChatterboxLoaded {
-    fn key(&self) -> String {
-        format!("{}|{}|{}", self.voice, self.language, self.exaggeration)
-    }
 }
 
 pub struct Spoken {
@@ -191,6 +193,19 @@ impl Spoken {
     /// One path for both local engines: they differ in everything except the shape of this,
     /// which is "turn text into 24 kHz mono and write it down".
     pub fn render(&self, settings: &Settings, text: &str, path: &Path) -> Result<Report, String> {
+        let (samples, report, rate) = self.synthesize_audio(settings, text)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
+        }
+        kokoro::write_wav(path, &samples, rate)?;
+        Ok(report)
+    }
+
+    fn synthesize_audio(
+        &self,
+        settings: &Settings,
+        text: &str,
+    ) -> Result<(Vec<f32>, Report, u32), String> {
         let (samples, phoneme_count, dropped, rate) = match settings.engine {
             Engine::Kokoro => {
                 let dir =
@@ -230,18 +245,102 @@ impl Spoken {
             }
         };
 
-        let seconds = samples.len() as f32 / rate as f32;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
-        }
-        kokoro::write_wav(path, &samples, rate)?;
-
-        Ok(Report {
+        let report = Report {
             chars: text.chars().count(),
             phonemes: phoneme_count,
-            seconds,
+            seconds: samples.len() as f32 / rate as f32,
             dropped,
-        })
+        };
+        Ok((samples, report, rate))
+    }
+
+    /// Play the first phrase while synthesizing the next. The caller gates each
+    /// playback start with its job lock, making Stop atomic with starting audio.
+    pub(crate) fn stream<C, P>(
+        &self,
+        settings: &Settings,
+        text: &str,
+        cancelled: C,
+        mut start: P,
+    ) -> Result<Report, String>
+    where
+        C: Fn() -> bool + Sync,
+        P: FnMut(&Path) -> Result<(), String>,
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let chunks = crate::streaming::chunks(text)
+            .into_iter()
+            .filter(|chunk| !chunk.trim().is_empty())
+            .collect::<Vec<_>>();
+        if chunks.is_empty() {
+            return Err("nothing to say: the selection is empty".to_string());
+        }
+        let dir = engine_paths::app_support_dir()
+            .ok_or("cannot locate the app support directory")?
+            .join("cache");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create audio cache: {e}"))?;
+        let mut total = Report {
+            chars: 0,
+            phonemes: 0,
+            seconds: 0.0,
+            dropped: Vec::new(),
+        };
+        let result = crate::streaming::run(
+            chunks,
+            |chunk| self.synthesize_audio(settings, chunk),
+            |(samples, report, rate)| {
+                if cancelled() {
+                    return Ok(());
+                }
+                let file = StreamingWav(dir.join(format!(
+                    "stream-{}-{}.wav",
+                    std::process::id(),
+                    NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+                )));
+                kokoro::write_wav(&file.0, &samples, rate)?;
+                start(&file.0)?;
+                while !cancelled() && self.is_speaking() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                total.chars += report.chars;
+                total.phonemes += report.phonemes;
+                total.seconds += report.seconds;
+                for dropped in report.dropped {
+                    if !total.dropped.contains(&dropped) {
+                        total.dropped.push(dropped);
+                    }
+                }
+                Ok(())
+            },
+            &cancelled,
+        );
+        // Retain throughout a stream even when keep-warm is off, then honor the
+        // user's memory preference after the producer has finished.
+        self.release_idle_models();
+        result.map(|()| total)
+    }
+
+    pub(crate) fn play_chunk(&self, wav: &Path) -> Result<(), String> {
+        let mut player = self.player.lock().unwrap();
+        if let Some(child) = player.as_mut() {
+            if child
+                .try_wait()
+                .map_err(|e| format!("audio player: {e}"))?
+                .is_none()
+            {
+                return Err("previous audio chunk is still playing".to_string());
+            }
+        }
+        *player = Some(
+            Command::new(AFPLAY)
+                .arg(wav)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("spawn {AFPLAY}: {e}"))?,
+        );
+        Ok(())
     }
 
     /// Chatterbox's synthesis core: check the language and the clip, load (or reuse) the
@@ -270,17 +369,20 @@ impl Spoken {
         *self.chatterbox_keep_warm.lock().unwrap() = settings.chatterbox.keep_warm;
 
         let mut guard = self.chatterbox.lock().unwrap();
-        let loaded = ChatterboxLoaded {
-            voice: clip.to_string_lossy().into_owned(),
-            language: language.clone(),
-            exaggeration: format!("{exaggeration}"),
-            engine: Chatterbox::load(dir, exaggeration)?,
-        };
-        let stale = guard
-            .as_ref()
-            .is_none_or(|current| current.key() != loaded.key());
+        let voice = clip.to_string_lossy().into_owned();
+        let exaggeration_key = format!("{exaggeration}");
+        let stale = guard.as_ref().is_none_or(|current| {
+            current.voice != voice
+                || current.language != language
+                || current.exaggeration != exaggeration_key
+        });
         if stale {
-            *guard = Some(loaded);
+            *guard = Some(ChatterboxLoaded {
+                voice,
+                language: language.clone(),
+                exaggeration: exaggeration_key,
+                engine: Chatterbox::load(dir, exaggeration)?,
+            });
         }
         let engine = &mut guard.as_mut().expect("just loaded").engine;
         let utterance = engine.synthesize(text, &language, &clip)?;
@@ -374,7 +476,7 @@ impl Spoken {
         Ok(dir.join("cache").join("spoken.wav"))
     }
 
-    fn play(&self, wav: &Path) -> Result<(), String> {
+    pub(crate) fn play(&self, wav: &Path) -> Result<(), String> {
         self.stop();
         let child = Command::new(AFPLAY)
             .arg(wav)
@@ -395,16 +497,24 @@ impl Spoken {
             let _ = child.wait();
         }
         drop(guard);
+        self.release_idle_models();
+    }
+
+    fn release_idle_models(&self) {
         // Release the graph unless the user asked to keep it. Stopping is not the same as
         // unloading: with `keep_warm` on, the next selection speaks immediately instead of
         // waiting for 325 MB to be read off disk again.
         if !*self.keep_warm.lock().unwrap() {
-            *self.kokoro.lock().unwrap() = None;
+            if let Ok(mut engine) = self.kokoro.try_lock() {
+                *engine = None;
+            }
         }
         // Chatterbox's sessions are 1.5 GB resident, so this is its own switch: a user may
         // well want Kokoro kept warm and Chatterbox released.
         if !*self.chatterbox_keep_warm.lock().unwrap() {
-            *self.chatterbox.lock().unwrap() = None;
+            if let Ok(mut engine) = self.chatterbox.try_lock() {
+                *engine = None;
+            }
         }
     }
 
@@ -534,6 +644,180 @@ mod tests {
         let settings = Settings::default();
         let spoken = Spoken::new();
         assert!(spoken.speak(&settings, "   ").is_err());
+    }
+
+    fn assert_real_stream(engine: Engine) {
+        let mut settings = Settings {
+            engine,
+            ..Settings::default()
+        };
+        settings.kokoro.keep_warm = false;
+        settings.chatterbox.keep_warm = false;
+        let spoken = Spoken::new();
+        let started = std::time::Instant::now();
+        let mut paths = Vec::new();
+        let report = spoken
+            .stream(
+                &settings,
+                "Hello there. Good morning.",
+                || false,
+                |path| {
+                    let mut wav = hound::WavReader::open(path).unwrap();
+                    assert_eq!(wav.spec().sample_rate, 24_000);
+                    assert!(wav
+                        .samples::<i16>()
+                        .any(|sample| sample.unwrap().abs() > 300));
+                    println!(
+                        "{:?} chunk {} starts at {:.2}s",
+                        engine,
+                        paths.len() + 1,
+                        started.elapsed().as_secs_f64()
+                    );
+                    paths.push(path.to_path_buf());
+                    spoken.play_chunk(path)
+                },
+            )
+            .expect("stream speech");
+        println!(
+            "{:?} stream completed in {:.2}s, {:.2}s audio",
+            engine,
+            started.elapsed().as_secs_f64(),
+            report.seconds
+        );
+        assert_eq!(paths.len(), 2);
+        assert_eq!(report.chars, "Hello there. Good morning.".chars().count());
+        assert!(report.seconds > 0.5);
+        assert!(report.dropped.is_empty());
+        assert!(!spoken.is_speaking());
+        assert!(
+            paths.iter().all(|path| !path.exists()),
+            "stream files must be removed"
+        );
+        assert!(spoken.kokoro.lock().unwrap().is_none());
+        assert!(spoken.chatterbox.lock().unwrap().is_none());
+    }
+
+    #[test]
+    #[ignore = "needs Kokoro weights and plays test audio"]
+    fn streams_real_kokoro_audio() {
+        assert_real_stream(Engine::Kokoro);
+    }
+
+    #[test]
+    #[ignore = "needs Chatterbox weights and plays test audio"]
+    fn streams_real_chatterbox_audio() {
+        assert_real_stream(Engine::Chatterbox);
+    }
+
+    #[test]
+    #[ignore = "needs Kokoro weights and briefly starts test audio"]
+    fn stopping_a_real_stream_discards_later_chunks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let settings = Settings {
+            engine: Engine::Kokoro,
+            ..Settings::default()
+        };
+        let spoken = Spoken::new();
+        let stopped = AtomicBool::new(false);
+        let mut count = 0;
+        spoken
+            .stream(
+                &settings,
+                "Hello there. Good morning. Have a nice day.",
+                || stopped.load(Ordering::SeqCst),
+                |path| {
+                    spoken.play_chunk(path)?;
+                    count += 1;
+                    spoken.stop();
+                    stopped.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(!spoken.is_speaking());
+    }
+
+    /// Real-model cache regression: remove only our temporary link to the graphs
+    /// after the first call. A cache hit must not try opening them again.
+    #[test]
+    #[ignore = "needs the installed Chatterbox weights"]
+    fn chatterbox_reuses_loaded_graphs_on_repeated_calls() {
+        use std::os::unix::fs::symlink;
+        use std::time::Instant;
+        let source = engine_paths::chatterbox_dir().expect("app support directory");
+        assert!(
+            engine_paths::chatterbox_installed(),
+            "install Chatterbox first"
+        );
+        let dir =
+            std::env::temp_dir().join(format!("kiegen-chatterbox-cache-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        for entry in std::fs::read_dir(&source).unwrap() {
+            let entry = entry.unwrap();
+            symlink(entry.path(), dir.join(entry.file_name())).unwrap();
+        }
+        let mut settings = Settings {
+            engine: Engine::Chatterbox,
+            ..Settings::default()
+        };
+        settings.chatterbox.keep_warm = true;
+        let spoken = Spoken::new();
+        let started = Instant::now();
+        let first = spoken
+            .synthesize_chatterbox(&dir, &settings, "Hello.")
+            .expect("first call");
+        println!(
+            "cold call: {:.2}s, {} samples",
+            started.elapsed().as_secs_f64(),
+            first.len()
+        );
+        assert!(!first.is_empty());
+        spoken.stop();
+        assert!(
+            spoken.chatterbox.lock().unwrap().is_some(),
+            "keep warm must survive Stop"
+        );
+        std::fs::remove_file(dir.join("onnx")).unwrap();
+        let started = Instant::now();
+        let second = spoken.synthesize_chatterbox(&dir, &settings, "Hello.");
+        println!("warm call: {:.2}s", started.elapsed().as_secs_f64());
+        // Remove only this test's symlink tree, including on a failed cache lookup.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let second = second.expect("a cached call must not reopen the model files");
+        assert_eq!(first.len(), second.len());
+        assert!(
+            second.iter().any(|s| s.abs() > 0.01),
+            "cached output is silent"
+        );
+        *spoken.chatterbox_keep_warm.lock().unwrap() = false;
+        spoken.stop();
+        assert!(
+            spoken.chatterbox.lock().unwrap().is_none(),
+            "disabling retention must unload"
+        );
+    }
+
+    #[test]
+    fn stop_does_not_wait_for_an_in_flight_model() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+        let spoken = Arc::new(Spoken::new());
+        *spoken.keep_warm.lock().unwrap() = false;
+        *spoken.chatterbox_keep_warm.lock().unwrap() = false;
+        let kokoro = spoken.kokoro.lock().unwrap();
+        let chatterbox = spoken.chatterbox.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = spoken.clone();
+        let thread = std::thread::spawn(move || {
+            worker.stop();
+            tx.send(()).unwrap();
+        });
+        let stopped = rx.recv_timeout(Duration::from_millis(250));
+        drop(kokoro);
+        drop(chatterbox);
+        thread.join().unwrap();
+        assert!(stopped.is_ok(), "Stop waited for model synthesis to finish");
     }
 
     #[test]

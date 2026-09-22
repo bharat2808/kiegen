@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "speech-overlay",
+  "description": "Speech status events for the floating Stop panel",
+  "windows": ["speech-overlay"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

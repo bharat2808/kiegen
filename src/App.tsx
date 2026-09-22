@@ -105,7 +105,7 @@ type UiState = {
   config_path: string;
 };
 
-type Phase = "idle" | "capturing" | "speaking" | "error";
+type Phase = "idle" | "capturing" | "preparing" | "speaking" | "error";
 type Status = { phase: Phase; message?: string | null; chars?: number | null };
 
 type Tab = "general" | "voice" | "shortcuts" | "capture";
@@ -389,7 +389,7 @@ function Row({
       aria-disabled={disabled ? true : undefined}
       onClick={disabled ? undefined : onSelect}
       onKeyDown={(event) => {
-        if (disabled) return;
+        if (disabled || event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onSelect();
@@ -611,13 +611,13 @@ export default function App() {
   }, [recording, save, state]);
 
   const preview = useCallback(
-    (voice: Voice | null) => {
+    (voice: Voice | string | null) => {
       if (!state) return;
       void invoke("preview_voice", {
-        voice: voice ? voice.name : null,
+        voice: typeof voice === "string" ? voice : voice?.name ?? null,
         rate: state.settings.rate,
         text: null,
-      });
+      }).catch((e) => setError(String(e)));
     },
     [state],
   );
@@ -638,6 +638,9 @@ export default function App() {
 
   const { settings } = state;
   const selectedVoice = voices.find((voice) => voice.name === settings.voice) ?? null;
+  const selectedEngineVoice = engineVoices.find(
+    (voice) => voice.id === activeEngine?.selected_voice,
+  );
 
   /*
    * Download progress, when the Rust side is fetching weights for the engine on screen.
@@ -712,7 +715,9 @@ export default function App() {
       ? { kind: "error" as const, text: status.message ?? "failed" }
       : status.phase === "capturing"
         ? { kind: "info" as const, text: "Reading selection…" }
-        : status.phase === "speaking"
+        : status.phase === "preparing"
+          ? { kind: "info" as const, text: "Preparing speech…" }
+          : status.phase === "speaking"
           ? {
               kind: "info" as const,
               text: status.chars ? `Speaking ${status.chars} characters` : "Speaking…",
@@ -1043,6 +1048,19 @@ export default function App() {
               </Card>
             ) : (
               <Card title={`Voices — ${activeEngine?.label ?? ""}`} icon={Icon.speaker()}>
+                <div className="inline">
+                  <button
+                    className="plain"
+                    disabled={!activeEngine?.can_speak || !selectedEngineVoice || selectedEngineVoice.unavailable !== null}
+                    onClick={() => preview(selectedEngineVoice?.id ?? null)}
+                  >
+                    {Icon.play()} Preview {selectedEngineVoice?.label ?? "selected voice"}
+                  </button>
+                  <button className="plain" onClick={() => void invoke("stop_speaking")}>
+                    Stop
+                  </button>
+                </div>
+                <div className="card-note">Listen to a sample of the selected voice.</div>
                 <div className="field">
                   <span className="field-label">Voices</span>
                   <span className="field-hint">
@@ -1093,6 +1111,20 @@ export default function App() {
                               disabled={voice.unavailable !== null}
                               badge={chosen ? "Default" : undefined}
                               onSelect={() => saveEngineVoice(voice.id)}
+                              trailing={
+                                <button
+                                  className="icon"
+                                  title={`Preview ${voice.label}`}
+                                  aria-label={`Preview ${voice.label}`}
+                                  disabled={!activeEngine?.can_speak || voice.unavailable !== null}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    preview(voice.id);
+                                  }}
+                                >
+                                  {Icon.play()}
+                                </button>
+                              }
                             />
                           );
                         })}

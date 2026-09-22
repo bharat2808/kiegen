@@ -15,9 +15,12 @@ pub mod g2p;
 pub mod kokoro;
 pub mod lexicon;
 pub mod numbers;
+mod overlay;
 mod shortcuts;
 mod speech;
+mod speech_job;
 pub mod spoken;
+mod streaming;
 pub mod voices;
 
 use std::sync::Mutex;
@@ -43,6 +46,8 @@ const ACCESSIBILITY_PANE: &str =
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
+    job: Mutex<speech_job::SpeechJob>,
+    synthesis: Mutex<()>,
     /// Every engine the app can speak with, routed by the settings. The Apple path lives
     /// inside it rather than beside it so there is one place that decides what speaks.
     pub spoken: spoken::Spoken,
@@ -55,6 +60,7 @@ pub struct AppState {
 pub enum Phase {
     Idle,
     Capturing,
+    Preparing,
     Speaking,
     Error,
 }
@@ -104,15 +110,112 @@ fn ui_state(app: &AppHandle, refused_shortcuts: Vec<String>) -> UiState {
     }
 }
 
-fn emit_status(app: &AppHandle, phase: Phase, message: Option<String>, chars: Option<usize>) {
-    let _ = app.emit(
-        "kiegen:status",
-        StatusEvent {
-            phase,
-            message,
-            chars,
+#[tauri::command]
+fn get_speech_status(app: AppHandle) -> StatusEvent {
+    app.state::<AppState>().job.lock().unwrap().status.clone()
+}
+
+fn begin_speech(app: &AppHandle, phase: Phase) -> u64 {
+    let state = app.state::<AppState>();
+    let mut job = state.job.lock().unwrap();
+    state.spoken.stop();
+    let id = job.begin(phase);
+    let _ = app.emit("kiegen:status", &job.status);
+    id
+}
+
+fn job_status(
+    app: &AppHandle,
+    id: u64,
+    phase: Phase,
+    message: Option<String>,
+    chars: Option<usize>,
+) {
+    let state = app.state::<AppState>();
+    let mut job = state.job.lock().unwrap();
+    if job.is_current(id) {
+        job.set(phase, message, chars);
+        let _ = app.emit("kiegen:status", &job.status);
+    }
+}
+
+/// Serialize synthesis, but keep Stop independent of the model lock. A canceled
+/// render may finish computing; only the current job is allowed to start playback.
+fn run_speech(app: &AppHandle, id: u64, settings: Settings, text: String, truncated: bool) {
+    let state = app.state::<AppState>();
+    let _synthesis = state.synthesis.lock().unwrap();
+    if !state.job.lock().unwrap().is_current(id) {
+        return;
+    }
+    let chars = text.chars().count();
+    job_status(app, id, Phase::Preparing, None, Some(chars));
+    if let Some(reason) = selected_engine_refusal(&settings) {
+        job_status(app, id, Phase::Error, Some(reason), Some(chars));
+        return;
+    }
+    if settings.engine == config::Engine::Apple {
+        let result = {
+            let job = state.job.lock().unwrap();
+            if !job.is_current(id) {
+                return;
+            }
+            state.spoken.speak(&settings, &text)
+        };
+        match result {
+            Ok(report) => job_status(
+                app,
+                id,
+                Phase::Speaking,
+                Some(report.summary()),
+                Some(chars),
+            ),
+            Err(error) => job_status(app, id, Phase::Error, Some(error), Some(chars)),
+        }
+        return;
+    }
+    {
+        let mut job = state.job.lock().unwrap();
+        if !job.is_current(id) {
+            return;
+        }
+        job.streaming = true;
+    }
+    let result = state.spoken.stream(
+        &settings,
+        &text,
+        || !state.job.lock().unwrap().is_current(id),
+        |wav| {
+            let mut job = state.job.lock().unwrap();
+            if !job.is_current(id) {
+                return Ok(());
+            }
+            state.spoken.play_chunk(wav)?;
+            job.set(Phase::Speaking, None, Some(chars));
+            let _ = app.emit("kiegen:status", &job.status);
+            Ok(())
         },
     );
+    let mut job = state.job.lock().unwrap();
+    if !job.is_current(id) {
+        return;
+    }
+    job.streaming = false;
+    match result {
+        Ok(report) => job.set(
+            Phase::Idle,
+            Some(if truncated {
+                format!("truncated to {} characters", settings.max_chars)
+            } else {
+                report.summary()
+            }),
+            Some(chars),
+        ),
+        Err(error) => {
+            state.spoken.stop();
+            job.set(Phase::Error, Some(error), Some(chars));
+        }
+    }
+    let _ = app.emit("kiegen:status", &job.status);
 }
 
 /// Why the selected engine cannot speak, or `None` if it can.
@@ -123,9 +226,14 @@ fn selected_engine_refusal(settings: &Settings) -> Option<String> {
     if settings.engine == config::Engine::Apple {
         return None;
     }
-    engines::catalog(settings)
+    engine_refusal(settings.engine, engines::catalog(settings))
+}
+
+fn engine_refusal(engine: config::Engine, catalog: Vec<engines::EngineInfo>) -> Option<String> {
+    catalog
         .into_iter()
-        .find(|info| info.id == settings.engine)
+        .find(|info| info.id == engine)
+        .filter(|info| !info.can_speak)
         .map(|info| match info.blocked_reason {
             // The user asked for speech and got silence: give them the reason and the way
             // out, rather than the terse status line the settings pane shows.
@@ -139,87 +247,33 @@ fn selected_engine_refusal(settings: &Settings) -> Option<String> {
 
 /// The whole point of the app: capture → speak. Runs off the main thread because the
 /// AX read plus a possible ⌘C round-trip blocks for up to `COPY_TIMEOUT_MS`.
-fn speak_selection(app: &AppHandle) {
-    let (mode, restore, max_chars, refusal) = {
-        let state = app.state::<AppState>();
-        let settings = state.settings.lock().unwrap();
-        (
-            settings.capture_mode,
-            settings.restore_clipboard,
-            settings.max_chars,
-            selected_engine_refusal(&settings),
-        )
-    };
-
-    // Check before capturing: there is no point running a ⌘C round-trip for text the
-    // engine cannot speak.
-    if let Some(reason) = refusal {
-        emit_status(app, Phase::Error, Some(reason), None);
+fn speak_selection(app: &AppHandle, id: u64) {
+    let settings = app.state::<AppState>().settings.lock().unwrap().clone();
+    if let Some(reason) = selected_engine_refusal(&settings) {
+        job_status(app, id, Phase::Error, Some(reason), None);
         return;
     }
-
-    emit_status(app, Phase::Capturing, None, None);
-
-    let text = match capture::capture(mode, COPY_TIMEOUT_MS, restore) {
+    let text = match capture::capture(
+        settings.capture_mode,
+        COPY_TIMEOUT_MS,
+        settings.restore_clipboard,
+    ) {
         Ok(text) => text,
         Err(error) => {
-            eprintln!("[kiegen] capture failed: {error}");
-            emit_status(app, Phase::Error, Some(error.to_string()), None);
+            job_status(app, id, Phase::Error, Some(error.to_string()), None);
             return;
         }
     };
-
-    let mut truncated = false;
-    let text: String = if text.chars().count() > max_chars {
-        truncated = true;
-        text.chars().take(max_chars).collect()
-    } else {
-        text
-    };
-    let chars = text.chars().count();
-
-    // The settings are cloned out rather than held: synthesis takes about a second, and the
-    // settings panel polls `get_state` on the same mutex.
-    let report = {
-        let state = app.state::<AppState>();
-        let settings = state.settings.lock().unwrap().clone();
-        state.spoken.speak(&settings, &text)
-    };
-    match report {
-        Ok(report) => {
-            let message = if truncated {
-                format!("truncated to {max_chars} characters")
-            } else {
-                report.summary()
-            };
-            emit_status(app, Phase::Speaking, Some(message), Some(chars));
-        }
-        Err(error) => emit_status(app, Phase::Error, Some(error), Some(chars)),
-    }
+    let truncated = text.chars().count() > settings.max_chars;
+    let text = text.chars().take(settings.max_chars).collect();
+    run_speech(app, id, settings, text, truncated);
 }
 
-/// Speak a caller-supplied string (voice previews), bypassing capture entirely.
-fn speak_given(app: &AppHandle, text: String) {
-    let (max_chars, refusal) = {
-        let state = app.state::<AppState>();
-        let settings = state.settings.lock().unwrap();
-        (settings.max_chars, selected_engine_refusal(&settings))
-    };
-    if let Some(reason) = refusal {
-        emit_status(app, Phase::Error, Some(reason), None);
-        return;
-    }
-    let text: String = text.chars().take(max_chars).collect();
-    let chars = text.chars().count();
-    let report = {
-        let state = app.state::<AppState>();
-        let settings = state.settings.lock().unwrap().clone();
-        state.spoken.speak(&settings, &text)
-    };
-    match report {
-        Ok(_) => emit_status(app, Phase::Speaking, None, Some(chars)),
-        Err(error) => emit_status(app, Phase::Error, Some(error), Some(chars)),
-    }
+fn speak_given(app: &AppHandle, id: u64, text: String) {
+    let settings = app.state::<AppState>().settings.lock().unwrap().clone();
+    let truncated = text.chars().count() > settings.max_chars;
+    let text = text.chars().take(settings.max_chars).collect();
+    run_speech(app, id, settings, text, truncated);
 }
 
 fn show_settings(app: &AppHandle) {
@@ -251,51 +305,48 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<UiState, String> 
 /// Speak the current selection right now (the settings window's "try it" button).
 #[tauri::command]
 fn speak_selection_now(app: AppHandle) {
-    std::thread::spawn(move || speak_selection(&app));
+    let id = begin_speech(&app, Phase::Capturing);
+    std::thread::spawn(move || speak_selection(&app, id));
 }
 
 #[tauri::command]
 fn speak_text(app: AppHandle, text: String) {
-    std::thread::spawn(move || speak_given(&app, text));
+    let id = begin_speech(&app, Phase::Preparing);
+    std::thread::spawn(move || speak_given(&app, id, text));
 }
 
 /// Audition a voice without committing to it. The voice browser previews rows this
 /// way, so clicking through the list never silently rewrites the saved setting.
 #[tauri::command]
 fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<String>) {
+    let id = begin_speech(&app, Phase::Preparing);
+    let mut settings = app.state::<AppState>().settings.lock().unwrap().clone();
+    settings.rate = rate;
+    match settings.engine {
+        config::Engine::Apple => settings.voice = voice,
+        config::Engine::Kokoro => {
+            if let Some(voice) = voice {
+                settings.kokoro.voice = voice;
+            }
+        }
+        config::Engine::Chatterbox => {
+            if let Some(voice) = voice {
+                settings.chatterbox.voice = voice;
+            }
+        }
+    }
     let sample =
         text.unwrap_or_else(|| "This is how I sound when reading your selection.".to_string());
-    std::thread::spawn(move || {
-        // Auditioning a voice belongs to the engine that owns it. Clicking play on a
-        // Kokoro row while Apple is active must say so, not play an Apple voice and
-        // imply the two are the same.
-        let refusal = {
-            let state = app.state::<AppState>();
-            let settings = state.settings.lock().unwrap();
-            selected_engine_refusal(&settings)
-        };
-        if let Some(reason) = refusal {
-            emit_status(&app, Phase::Error, Some(reason), None);
-            return;
-        }
-        let report = {
-            let state = app.state::<AppState>();
-            let settings = state.settings.lock().unwrap().clone();
-            state
-                .spoken
-                .preview(&settings, voice.as_deref(), rate, &sample)
-        };
-        match report {
-            Ok(_) => emit_status(&app, Phase::Speaking, Some("preview".to_string()), None),
-            Err(error) => emit_status(&app, Phase::Error, Some(error), None),
-        }
-    });
+    std::thread::spawn(move || run_speech(&app, id, settings, sample, false));
 }
 
 #[tauri::command]
 fn stop_speaking(app: AppHandle) {
-    app.state::<AppState>().spoken.stop();
-    emit_status(&app, Phase::Idle, None, None);
+    let state = app.state::<AppState>();
+    let mut job = state.job.lock().unwrap();
+    job.cancel();
+    state.spoken.stop();
+    let _ = app.emit("kiegen:status", &job.status);
 }
 
 // ─────────────────────────── weight downloads ───────────────────────────
@@ -468,11 +519,11 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "speak" => {
                 let app = app.clone();
-                std::thread::spawn(move || speak_selection(&app));
+                let id = begin_speech(&app, Phase::Capturing);
+                std::thread::spawn(move || speak_selection(&app, id));
             }
             "stop" => {
-                app.state::<AppState>().spoken.stop();
-                emit_status(app, Phase::Idle, None, None);
+                stop_speaking(app.clone());
             }
             "settings" => show_settings(app),
             "quit" => {
@@ -504,11 +555,11 @@ pub fn run() {
                     match shortcuts::action_for(app, shortcut) {
                         Some(Action::Speak) => {
                             let app = app.clone();
-                            std::thread::spawn(move || speak_selection(&app));
+                            let id = begin_speech(&app, Phase::Capturing);
+                            std::thread::spawn(move || speak_selection(&app, id));
                         }
                         Some(Action::Stop) => {
-                            app.state::<AppState>().spoken.stop();
-                            emit_status(app, Phase::Idle, None, None);
+                            stop_speaking(app.clone());
                         }
                         None => {}
                     }
@@ -526,6 +577,8 @@ pub fn run() {
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
+                job: Mutex::new(speech_job::SpeechJob::default()),
+                synthesis: Mutex::new(()),
                 spoken: spoken::Spoken::new(),
                 voices,
                 bindings: Mutex::new(Vec::new()),
@@ -535,6 +588,7 @@ pub fn run() {
                 eprintln!("[kiegen] shortcut setup failed: {error}");
             }
             install_tray(&handle)?;
+            overlay::setup(&handle)?;
 
             // First run: nothing is bound, nothing is granted — put the window in front
             // of the user once. Afterwards the tray is the only way in.
@@ -546,6 +600,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            get_speech_status,
             save_settings,
             speak_selection_now,
             speak_text,
@@ -561,4 +616,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running kiegen");
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[test]
+    fn ready_local_engines_are_allowed_to_speak() {
+        for engine in [config::Engine::Kokoro, config::Engine::Chatterbox] {
+            let mut catalog = engines::catalog_with(&config::Settings::default(), Vec::new());
+            let info = catalog.iter_mut().find(|info| info.id == engine).unwrap();
+            info.can_speak = true;
+            info.blocked_reason = None;
+            assert_eq!(engine_refusal(engine, catalog), None);
+        }
+    }
+
+    #[test]
+    fn unavailable_engine_explains_what_is_missing() {
+        let mut catalog = engines::catalog_with(&config::Settings::default(), Vec::new());
+        let info = catalog
+            .iter_mut()
+            .find(|info| info.id == config::Engine::Kokoro)
+            .unwrap();
+        info.can_speak = false;
+        info.blocked_reason = Some("Weights missing".to_string());
+        let reason = engine_refusal(config::Engine::Kokoro, catalog).unwrap();
+        assert!(reason.contains("Weights missing"));
+    }
+
+    #[test]
+    fn apple_speech_remains_available() {
+        assert_eq!(selected_engine_refusal(&config::Settings::default()), None);
+    }
 }
