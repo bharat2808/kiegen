@@ -304,8 +304,8 @@ pub fn kokoro_voices(espeak_ready: bool) -> Vec<EngineVoice> {
 }
 
 /// The espeak-ng voice a Kokoro voice id needs, or `None` when it uses the built-in English
-/// front end. The synthesis path branches on this, and it is the single place that decision
-/// is made — a voice is espeak-backed here or it is not, everywhere.
+/// front end. English can optionally use an installed CLI for unknown words, but never
+/// requires it for readiness. This mapping describes voices that require espeak-ng.
 pub fn espeak_language_for(voice: &str) -> Option<&'static str> {
     family_for(voice)?.espeak
 }

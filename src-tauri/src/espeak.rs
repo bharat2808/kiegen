@@ -106,6 +106,13 @@ impl EspeakNg {
         Ok(swap_brackets_out(&clean(&restored)))
     }
 
+    /// English unknown-word conversion uses Misaki's EspeakFallback inventory, which
+    /// differs from its non-English EspeakG2P conversion. The executable stays external.
+    pub fn phonemize_english_word(&self, word: &str, british: bool) -> Result<String, String> {
+        let raw = self.phonemize_chunk(word, if british { "en-gb" } else { "en-us" })?;
+        Ok(clean_english(&raw, british))
+    }
+
     /// One espeak-ng call. Returns the chunk's phonemes followed by the word separator,
     /// which is the shape phonemizer hands to `restore`.
     fn phonemize_chunk(&self, chunk: &str, voice: &str) -> Result<String, String> {
@@ -165,6 +172,69 @@ pub fn clean(phonemes: &str) -> String {
     // What remains of the tie markers, and the hyphens espeak inserts between words: both
     // are punctuation to the model, not phonemes.
     out.replace(['^', '-'], "")
+}
+
+/// English mappings from Misaki's Apache-2.0 EspeakFallback, longest keys first.
+/// https://github.com/hexgrad/misaki/blob/main/misaki/espeak.py
+fn clean_english(raw: &str, british: bool) -> String {
+    let mut out = raw.trim().to_string();
+    for (from, to) in [
+        ("ʔˌn\u{329}", "ʔn"),
+        ("ʔn\u{329}", "ʔn"),
+        ("a^ɪ", "I"),
+        ("a^ʊ", "W"),
+        ("d^ʒ", "ʤ"),
+        ("e^ɪ", "A"),
+        ("t^ʃ", "ʧ"),
+        ("ɔ^ɪ", "Y"),
+        ("ə^l", "ᵊl"),
+        ("ʲo", "jo"),
+        ("ʲə", "jə"),
+        ("e", "A"),
+        ("ʲ", ""),
+        ("ɚ", "əɹ"),
+        ("r", "ɹ"),
+        ("x", "k"),
+        ("ç", "k"),
+        ("ɐ", "ə"),
+        ("ɬ", "l"),
+        ("\u{303}", ""),
+    ] {
+        out = out.replace(from, to);
+    }
+    let mut syllables = String::new();
+    for c in out.chars() {
+        if c == '\u{329}'
+            && syllables
+                .chars()
+                .last()
+                .is_some_and(|last| !last.is_whitespace())
+        {
+            let consonant = syllables.pop().unwrap();
+            syllables.push('ᵊ');
+            syllables.push(consonant);
+        } else if c != '\u{329}' {
+            syllables.push(c);
+        }
+    }
+    out = syllables;
+    if british {
+        out = out
+            .replace("e^ə", "ɛː")
+            .replace("iə", "ɪə")
+            .replace("ə^ʊ", "Q");
+    } else {
+        out = out
+            .replace("o^ʊ", "O")
+            .replace("ɜːɹ", "ɜɹ")
+            .replace("ɜː", "ɜɹ")
+            .replace("ɪə", "iə")
+            .replace('ː', "");
+    }
+    out.replace('o', "ɔ")
+        .replace('ɾ', "T")
+        .replace('ʔ', "t")
+        .replace('^', "")
 }
 
 fn swap_brackets_in(text: &str) -> String {
@@ -461,6 +531,29 @@ pub fn install() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_optional_cli_preserves_unknown_word_spelling() {
+        let cli = super::EspeakNg {
+            binary: "/nonexistent/kiegen-espeak-ng".into(),
+            data: None,
+        };
+        let g = crate::g2p::G2p::load(r#"{"K":"kˈA","I":"ˈI","E":"ˈi","G":"ʤˈi","N":"ˈɛn"}"#, "{}")
+            .unwrap();
+        let spoken = g.phonemize_with_espeak("kiegen", Some(&cli), false);
+        assert!(!spoken.is_empty());
+        assert_eq!(spoken, g.phonemize("kiegen"));
+    }
+
+    #[test]
+    fn english_inventory_handles_rhotic_vowels_and_syllabic_consonants() {
+        assert_eq!(super::clean_english("fˈo^ʊnma^ɪzɚ", false), "fˈOnmIzəɹ");
+        assert_eq!(
+            super::clean_english("ɜːɹ n\u{329} ʔˌn\u{329}", false),
+            "ɜɹ ᵊn tn"
+        );
+        assert_eq!(super::clean_english("ə^ʊ iə", true), "Q ɪə");
+    }
+
     use super::*;
 
     #[test]

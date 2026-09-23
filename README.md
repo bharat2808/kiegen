@@ -1,97 +1,130 @@
-# kiegen
+# Kiegen
 
-Select text in **any** app, press a shortcut, hear it read aloud. kiegen lives in the
-menu bar — no Dock icon, no window at launch. The settings panel opens only when you ask
-for it.
+**Select text. Press a shortcut. Hear it read aloud.**
 
-> **Status: v0.** The menu-bar agent works end to end: tray menu, global shortcuts,
-> selection capture (Accessibility API with a clipboard fallback), and speech through
-> macOS `say`. The Kokoro neural voice engine lands in v0.5 — see
-> [docs/DESIGN.md](docs/DESIGN.md) §5 for the measured plan behind that.
+Kiegen is a macOS menu bar text-to-speech app with Apple system voices and local AI speech through Kokoro and Chatterbox. Built with Rust, Tauri, React, and TypeScript, it keeps playback controls close without taking focus away from your work.
 
-## Why it needs Accessibility permission
+## Features
 
-macOS has no general API for reading another app's selection. Only the Accessibility
-API can do it, and it requires an explicit grant:
+- **Read selected text** from other apps with a configurable global shortcut.
+- **Choose between three speech engines:** Apple system voices, Kokoro 82M, and Chatterbox Multilingual.
+- **Preview voices** directly in settings before using them.
+- **Start listening sooner:** Kokoro and Chatterbox play short phrases while the next phrase is generated.
+- **Control playback from a floating overlay** at the top center of the screen, with speech status and a Stop button.
+- **Use reference voices with Chatterbox** by importing a local WAV clip.
+- **Keep models loaded** between requests to avoid repeated model initialization.
+- **Choose how text is captured:** Accessibility, copying, or Accessibility with a copy fallback.
 
-**System Settings → Privacy & Security → Accessibility → enable kiegen**
+## Get started
 
-Without it, kiegen does nothing — it will not guess, and it will not touch your
-clipboard. Everything happens locally: selections are never logged, cached, or sent
-anywhere, and there is no network code in this repository.
+1. Launch Kiegen and open **Settings…** from its menu bar icon.
+2. Enable Kiegen in **System Settings → Privacy & Security → Accessibility**.
+3. Open **Voice**, choose an engine, and preview a voice. Apple system voices work without downloading a Kiegen model; Kokoro and Chatterbox require a model download through the app.
+4. Select text in another app and press **Cmd+Shift+S**.
+5. Press **Cmd+Shift+X** or click **Stop** in the overlay to stop playback.
 
-If you would rather never risk your clipboard, set **Method → “Accessibility only”**.
-If you use Chrome, Electron apps, or a terminal, set **“Copying only”** — those apps
-often expose no usable Accessibility tree.
+| Action | Default control |
+| --- | --- |
+| Read selected text | `Cmd+Shift+S` |
+| Stop speech | `Cmd+Shift+X` |
+| Open settings | Menu bar icon → **Settings…** |
+| Preview a voice | **Voice** → **Preview** |
 
-## Using it
+Change the keyboard shortcuts in **Shortcuts**. Selection length is limited to 5,000 characters by default and can be adjusted in **Capture**.
 
-| Action | Default |
-|---|---|
-| Speak the selection | `Cmd+Shift+S` |
-| Stop | `Cmd+Shift+X` |
-| Open settings | tray icon → Settings… |
+## Speech engines
 
-Both shortcuts are rebindable. Click **Record…**, press the combo; a modifier is required
-so a bare key cannot be swallowed system-wide.
+| Engine | Voices and languages | Setup |
+| --- | --- | --- |
+| **Apple system voices** | Voices installed in macOS, with language selection and speaking-rate controls | Available immediately; the default engine |
+| **Kokoro 82M** | American and British English; additional supported languages through espeak-ng | Download the model and voices in the app |
+| **Chatterbox Multilingual** | 23 languages, a built-in reference voice, and imported WAV reference clips | Download the model in the app |
 
-## Picking a voice
+Kokoro supports Spanish, French, Hindi, Italian, and Brazilian Portuguese through an installed espeak-ng executable. Japanese and Mandarin Kokoro voices are currently unavailable because their text front ends are not implemented.
 
-**Voice** opens on your system language and lists only that language's voices. Each row has
-a play button to audition it before you commit, and the chosen one is marked *Default*.
+Chatterbox has controls for emotion intensity and keeping the model loaded. Use **Add voice…** to import a WAV reference clip; Kiegen validates and converts the clip for the model.
 
-Two things macOS makes awkward, handled up front:
+### Optional espeak-ng support
 
-- **There may be no voice for your exact locale.** Canadian English has none, so kiegen
-  falls back to the closest language family, says which one it used, and puts the other
-  regions (UK, Australia, Ireland, …) one click away.
-- **Novelty voices are hidden.** `say` lists Bells, Zarvox, Boing and friends alongside real
-  voices. They are sound effects, not speech, so they sit behind a "show 15 novelty voices"
-  button rather than in your face.
+Kiegen detects an existing `espeak-ng` installation and invokes it as a separate CLI process. It does not bundle or link the espeak library.
 
-Speed is a slider (80–500 wpm, 200 default) and previews immediately.
+For English Kokoro voices, dictionary pronunciations are tried first. Unknown words use espeak-ng only when it is detected. If it is absent or cannot produce a pronunciation, Kiegen retains its letter-spelling behavior. Known words and acronyms keep their dictionary handling.
 
-## Design
+Detection includes standard Homebrew locations and `PATH`. For a custom installation, set `KIEGEN_ESPEAK_NG` to the executable's full path in the environment used to launch Kiegen.
 
-The settings panel mirrors the visual language of the local **freeflow-notes** app —
-AppKit's own metrics rather than web conventions:
-a 180 pt sidebar, cards of `controlBackgroundColor` at 50 % with a 6 % hairline and radius
-10, selection rows tinted with the accent colour, and AppKit point sizes for type. The
-mapping table at the top of `src/App.css` records each token against the SwiftUI construct
-it came from, so the two stay in step.
+## Text capture and privacy
+
+Speech synthesis runs locally. Selected text is not sent to a cloud speech service. Internet access is used to download model assets, including files from Hugging Face and GitHub.
+
+Kiegen requires Accessibility permission to capture another app's selection. In **Capture**, choose Accessibility-only capture to avoid using the clipboard, or use copying for apps that do not expose their selection through Accessibility. Copy-based capture can restore the previous clipboard contents; restoration is enabled by default.
+
+Models and imported reference voices are stored locally. Both local engines keep their continuous playback samples in memory.
+
+| Data | Default macOS location |
+| --- | --- |
+| Settings | `~/Library/Application Support/com.kiegen.app/settings.json` |
+| Models and reference voices | `~/Library/Application Support/kiegen/models/` |
+| Generated audio cache | `~/Library/Application Support/kiegen/cache/` |
 
 ## Build from source
 
-Requires macOS, Node 22+, Rust stable.
+Use macOS with Node.js 22+, npm, Rust stable, and Xcode Command Line Tools.
 
 ```bash
-npm install
-npm run tauri dev      # dev build, hot reload on the frontend
-npm run tauri build    # produces src-tauri/target/release/bundle/macos/kiegen.app
+git clone https://github.com/bharat2808/kiegen.git
+cd kiegen
+npm ci
+npm run tauri dev
 ```
 
-Then open the built app and grant Accessibility as above.
-
-**Expect to re-grant after every rebuild.** macOS ties the permission to the app's code
-signature, so an unsigned dev build looks like a new app each time. `tccutil reset
-Accessibility com.kiegen.app` clears the stale entry so it reappears in the list — see
-[docs/DEV.md](docs/DEV.md) for the full dev loop.
-
-## Tests
+To build the macOS application:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml   # capture guard, shortcut parsing, voices
-./scripts/check-licenses.sh                       # no copyleft in the dependency graph
-./scripts/preview.sh                              # settings UI in a browser (stubbed IPC)
+npm run tauri build -- --bundles app
 ```
 
-## Licence
+The application is written to:
 
-`MIT OR Apache-2.0`, at your option. kiegen deliberately depends on nothing copyleft:
-`./scripts/check-licenses.sh` scans the resolved graph, and [`deny.toml`](deny.toml)
-enforces the same rule in CI, including an explicit ban on the `kokoro-tts` crate, whose
-build compiles GPL-3.0-derived C.
+```text
+src-tauri/target/release/bundle/macos/kiegen.app
+```
 
-**Not affiliated with the Kokoro authors.** Kokoro-82M weights are Apache-2.0 and will be
-downloaded (not vendored) when the v0.5 engine lands; the model card documents two CC BY
-training corpora which will be credited in an in-app licences screen.
+Copy `kiegen.app` to **Applications**, launch it, and enable Accessibility access. Rebuilding can invalidate the previous permission grant. If capture stops working after a rebuild, remove the stale Kiegen entry in Accessibility settings and enable the rebuilt app again.
+
+## Development checks
+
+```bash
+npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+# Use an empty model directory for the standard suite.
+KIEGEN_MODELS_DIR="$(mktemp -d)" cargo test --manifest-path src-tauri/Cargo.toml
+
+./scripts/check-licenses.sh
+```
+
+Real-model and download tests require additional assets and are not all run by the standard suite. To exercise Kokoro streaming with the models installed in their default location:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib kokoro_pcm_latency_and_stop -- --ignored --nocapture
+```
+
+This test plays audio and measures cold/warm playback startup, buffer underruns, and Stop. To measure synthesis at different sentence lengths, run the ignored `benchmark_kokoro_sentence_lengths` test. The equivalent Chatterbox measurement is `chatterbox_pcm_latency_and_stop` and requires its installed model.
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/` | React settings interface and speech overlay |
+| `src-tauri/src/` | Native app, selection capture, speech engines, downloads, and playback |
+| `src-tauri/tests/` | Integration and model verification tests |
+| `scripts/` | Development and dependency-license checks |
+| `docs/` | Development notes and design history |
+| `spikes/` | Experimental implementations and investigation notes |
+
+## License
+
+Kiegen is licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Downloaded models and separately installed tools retain their own licenses. Dependency-license checks are defined in [`deny.toml`](deny.toml) and [`scripts/check-licenses.sh`](scripts/check-licenses.sh).
+
+Maintained by **bharat2808**.

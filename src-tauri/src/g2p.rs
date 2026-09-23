@@ -1,16 +1,13 @@
-//! Text to phonemes, in Rust, without eSpeak.
+//! Dictionary-based English text to phonemes, with an optional external espeak-ng CLI.
 //!
 //! This is the front end Kokoro needs: the engine is phoneme-in, so something has to turn a
 //! selection into IPA. The reference implementation is misaki's `en.py`, and this port is
 //! measured against it — see `the_reference_corpus_matches` in the tests, which scores this
 //! implementation against misaki's own output sentence by sentence.
 //!
-//! What is deliberately *better* than the reference: an unknown word is never deleted.
-//! misaki emits `❓` for a word it cannot pronounce, and Kokoro has no token for `❓`, so the
-//! word vanishes from the audio — the app's own name became "reads whatever you select"
-//! instead of "kiegen reads whatever you select". Here an unknown word is spelled out with
-//! the dictionary's letter names, which is audible and is exactly what the reference itself
-//! does for acronyms.
+//! Unknown words use an optional, separately installed espeak-ng CLI when supplied by the
+//! caller. Without it, dictionary letter names keep unknown words audible. Known words,
+//! numbers and acronyms retain the dictionary's pronunciations.
 
 use crate::lexicon::{Lexicon, Tag, TokenContext, CURRENCIES};
 
@@ -227,8 +224,18 @@ impl G2p {
         &self.lexicon
     }
 
-    /// The one entry point: a string to IPA, ready for the Kokoro engine.
+    /// Dictionary-only pronunciation, independent of installed tools.
     pub fn phonemize(&self, text: &str) -> String {
+        self.phonemize_with_espeak(text, None, false)
+    }
+
+    /// Use the optional external CLI only after dictionary and number lookup fail.
+    pub fn phonemize_with_espeak(
+        &self,
+        text: &str,
+        espeak: Option<&crate::espeak::EspeakNg>,
+        british: bool,
+    ) -> String {
         let mut tokens = tokenize(text);
         if tokens.is_empty() {
             return String::new();
@@ -299,6 +306,17 @@ impl G2p {
                     .map(|(ps, _)| ps)
                     .or_else(|| symbol_phonemes(&self.lexicon, &text, &ctx))
                     .or_else(|| self.lexicon.number(&text, currency).map(|(ps, _)| ps))
+                    .or_else(|| {
+                        let cli = espeak?;
+                        match cli.phonemize_english_word(&text, british) {
+                            Ok(ps) if !ps.trim().is_empty() => Some(ps),
+                            Ok(_) => None,
+                            Err(error) => {
+                                eprintln!("English espeak-ng unavailable: {error}");
+                                None
+                            }
+                        }
+                    })
                     .or_else(|| self.spelled(&text))
             };
 

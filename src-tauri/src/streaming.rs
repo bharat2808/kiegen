@@ -3,14 +3,24 @@ use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::time::Duration;
 
 /// Split at natural boundaries, with a short first phrase for early playback.
-pub fn chunks(text: &str) -> Vec<String> {
+pub fn chatterbox_chunks(text: &str) -> Vec<String> {
+    split(text, 100, 160, true)
+}
+
+/// Provisional Kokoro limits: preserve complete sentences up to the chunk budget.
+/// These are separate from Chatterbox's shorter synthesis budget.
+pub fn kokoro_chunks(text: &str) -> Vec<String> {
+    split(text, 180, 240, true)
+}
+
+fn split(text: &str, first: usize, later: usize, natural: bool) -> Vec<String> {
     if text.trim().is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
     let mut rest = text;
     while !rest.is_empty() {
-        let limit = if out.is_empty() { 100 } else { 160 };
+        let limit = if out.is_empty() { first } else { later };
         let window: Vec<(usize, char)> = rest.char_indices().take(limit).collect();
         let hard_end = window.last().map(|(i, c)| i + c.len_utf8()).unwrap();
         let sentence = window.iter().find_map(|(i, c)| {
@@ -18,19 +28,40 @@ pub fn chunks(text: &str) -> Vec<String> {
             let next = rest[end..].chars().next();
             let boundary = "。！？\n".contains(*c)
                 || (".!?".contains(*c) && next.is_none_or(char::is_whitespace));
-            boundary.then_some(end)
+            let abbreviation = natural && *c == '.' && {
+                let word = rest[..*i].split_whitespace().last().unwrap_or("");
+                [
+                    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g", "i.e",
+                ]
+                .contains(&word.to_lowercase().as_str())
+                    || (word.len() == 1 && word.chars().all(char::is_uppercase))
+            };
+            (boundary && !abbreviation).then_some(end)
         });
         let end = if let Some(end) = sentence {
             end
         } else if hard_end == rest.len() {
             hard_end
         } else {
-            window
-                .iter()
-                .rev()
-                .find(|(i, c)| *i > 0 && (c.is_whitespace() || ",;:，；：".contains(*c)))
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(hard_end)
+            let clause = natural
+                .then(|| {
+                    window
+                        .iter()
+                        .rev()
+                        .find(|(i, c)| *i > 0 && ",;:，；：".contains(*c))
+                        .map(|(i, c)| i + c.len_utf8())
+                })
+                .flatten();
+            clause.unwrap_or_else(|| {
+                window
+                    .iter()
+                    .rev()
+                    .find(|(i, c)| {
+                        *i > 0 && (c.is_whitespace() || (!natural && ",;:，；：".contains(*c)))
+                    })
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(hard_end)
+            })
         };
         out.push(rest[..end].to_string());
         rest = &rest[end..];
@@ -106,6 +137,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kokoro_keeps_sentence_context_and_abbreviations() {
+        let text = "Dr. Smith checked the first result before deciding whether the next sentence needed more context for the voice to sound natural.";
+        assert_eq!(super::kokoro_chunks(text), vec![text]);
+        let long = "word ".repeat(150);
+        let chunks = super::kokoro_chunks(&long);
+        assert_eq!(chunks.concat(), long);
+        assert!(chunks[0].chars().count() <= 180);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 240));
+    }
+
     use super::*;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -213,7 +255,7 @@ mod tests {
     #[test]
     fn text_is_preserved_and_the_first_sentence_can_start_early() {
         let text = "Hello there. This is the next sentence. And another one follows.";
-        let parts = chunks(text);
+        let parts = chatterbox_chunks(text);
         assert!(parts.len() > 1);
         assert_eq!(parts.concat(), text);
         assert_eq!(parts[0].trim(), "Hello there.");
@@ -222,7 +264,7 @@ mod tests {
     #[test]
     fn long_unpunctuated_and_unicode_text_is_bounded_without_lost_characters() {
         for text in ["word ".repeat(100), "世界你好".repeat(100)] {
-            let parts = chunks(&text);
+            let parts = chatterbox_chunks(&text);
             assert!(parts.iter().all(|part| part.chars().count() <= 160));
             assert!(parts[0].chars().count() <= 100);
             assert_eq!(parts.concat(), text);
@@ -232,7 +274,7 @@ mod tests {
     #[test]
     fn decimals_are_not_sentence_boundaries() {
         assert_eq!(
-            chunks("It costs 3.50 dollars. Next sentence.")[0].trim(),
+            chatterbox_chunks("It costs 3.50 dollars. Next sentence.")[0].trim(),
             "It costs 3.50 dollars."
         );
     }

@@ -2,7 +2,7 @@
 name = "kiegen"
 version = "0.1.0"
 description = "Speak any selected text, from anywhere in macOS"
-authors = ["kiegen contributors"]
+authors = ["bharat2808 <vermabhrat642@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

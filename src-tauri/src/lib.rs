@@ -16,6 +16,7 @@ pub mod kokoro;
 pub mod lexicon;
 pub mod numbers;
 mod overlay;
+mod pcm;
 mod shortcuts;
 mod speech;
 mod speech_job;
@@ -180,21 +181,24 @@ fn run_speech(app: &AppHandle, id: u64, settings: Settings, text: String, trunca
         }
         job.streaming = true;
     }
-    let result = state.spoken.stream(
-        &settings,
-        &text,
-        || !state.job.lock().unwrap().is_current(id),
-        |wav| {
-            let mut job = state.job.lock().unwrap();
-            if !job.is_current(id) {
-                return Ok(());
-            }
-            state.spoken.play_chunk(wav)?;
-            job.set(Phase::Speaking, None, Some(chars));
-            let _ = app.emit("kiegen:status", &job.status);
-            Ok(())
-        },
-    );
+    let result = state
+        .spoken
+        .stream_pcm(
+            &settings,
+            &text,
+            || !state.job.lock().unwrap().is_current(id),
+            |player| {
+                let mut job = state.job.lock().unwrap();
+                if !job.is_current(id) {
+                    return Ok(());
+                }
+                player.start()?;
+                job.set(Phase::Speaking, None, Some(chars));
+                let _ = app.emit("kiegen:status", &job.status);
+                Ok(())
+            },
+        )
+        .map(|(report, _, _)| report);
     let mut job = state.job.lock().unwrap();
     if !job.is_current(id) {
         return;
@@ -543,6 +547,16 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            // A menu-bar app keeps its settings window alive between visits. Destroying
+            // it makes get_webview_window("main") return None when Settings is clicked.
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
