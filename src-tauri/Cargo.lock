@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "kiegen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accessibility-sys",
  "core-foundation",
