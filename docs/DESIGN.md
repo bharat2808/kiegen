@@ -285,30 +285,30 @@ If kiegen depends on *no* third-party Kokoro wrapper — neither the Rust crate 
 
 ### Licence decision for kiegen: open source is the answer, *which* licence is the question
 
-The app's own licence is the only lever that matters, because GPL compatibility is one-way (GPL-3.0 code may be combined with Apache-2.0/MIT, never the reverse). Two self-consistent configurations:
+The project license applies to kiegen's original code. Every bundled dependency, model, and separately installed tool keeps its own license and required notices. The historical alternatives considered were:
 
-| | **Option 1 — GPL-3.0** | **Option 2 — MIT / Apache-2.0** |
+| | **Option 1 — GPL-3.0** | **Option 2 — Apache-2.0 only** |
 |---|---|---|
-| kiegen's own licence | GPL-3.0 | MIT OR Apache-2.0 |
-| `kokoro-tts` as published | ✅ use it as-is, no fork | ❌ must fork and strip the espeak-derived C |
+| kiegen's own licence | GPL-3.0 | Apache-2.0 |
+| `kokoro-tts` as published | ✅ use it as-is, no fork | ❌ do not use; it compiles espeak-derived C |
 | espeak-ng (the 5 espeak-only languages) | ✅ free to bundle, link, or subprocess | ⚠️ arm's-length only: user-installed (`brew install espeak-ng`), invoked as a subprocess, never linked or bundled |
 | language coverage | all 9 language codes / 54 voices | English + Mandarin (+ Japanese only if you port a Rust G2P) |
-| engineering cost | ≈ zero | one small fork plus a maintained patch |
-| downstream appeal | copyleft — fine for an end-user utility, unattractive to anyone embedding it in a closed product | permissive, widest reuse, easiest for contributors |
+| engineering cost | ≈ zero | maintain the in-repo Rust G2P implementation |
+| downstream appeal | copyleft — fine for an end-user utility, unattractive to anyone embedding it in a closed product | permissive Apache-2.0 grant with explicit patent terms |
 
-**Decision: Option 2 — kiegen is `MIT OR Apache-2.0`, and GPL must not enter the repo.** The file-level consequence is that the published `kokoro-tts` crate is **unusable as-is** (its unconditional `cc::Build` of `en_ipa.c` puts GPL-3.0-derived code in your binary), so the direct-build path below stops being optional and becomes the plan. `say` stays as the bootstrap engine — it is a system binary invoked as a subprocess, so it costs nothing licence-wise.
+**Decision: Option 2 — kiegen is licensed only under Apache-2.0.** The published `kokoro-tts` crate is **unusable as-is** (its unconditional `cc::Build` of `en_ipa.c` compiles espeak-derived C into the application), so kiegen owns its Rust G2P implementation. The app's licence does not relicense dependencies, models, or separately installed tools; each keeps its own terms. `say` stays as the bootstrap engine — it is a system binary invoked as a subprocess.
 
 **Licence hygiene, mechanically enforced (so this cannot drift back in):**
 
 - **`cargo-deny` 0.20.2** (`EmbarkStudios/cargo-deny`) in CI with an explicit `licenses.deny` list — `GPL-3.0`, `AGPL-3.0`, `SSPL-1.0` and friends — and `cargo deny check licenses` as a required check. A policy in a document does not survive six months; a failing CI job does.
 - **No vendored espeak-ng, ever** — not the binary, not the data, not a git submodule, not "just for tests". Its absence from the repo is the whole point.
-- **Everything in the runtime path must be `MIT OR Apache-2.0`-compatible**: `ort`, `rodio`, `cmudict-fast` (CMUdict is BSD-2-Clause and the crate is MIT/Apache-2.0), Tauri, and the Kokoro weights themselves (Apache-2.0, downloaded not vendored).
+- **Check every runtime dependency's own licence and redistribute its notices.** The project itself is Apache-2.0-only; dependencies remain under their upstream licences, including MIT, BSD, and Apache-2.0.
 - Keep a `NOTICE` file and an "Open-source licences" screen — the app-side obligation of Apache-2.0 is attribution, and it doubles as the required credit for Kokoro's two CC BY training corpora.
 - Write the **ARPAbet → IPA table yourself** rather than copying it out of a crate of uncertain provenance. It is a small, standard mapping, and re-deriving it is an hour of work that removes the question entirely.
 
 The residual cost, stated plainly: the other five languages become an optional `brew install espeak-ng` path rather than a shipped feature, and English out-of-dictionary words have no fallback unless the user installs espeak-ng or you ship a pronunciation-override file. That is the price of keeping the repo clean, and it is affordable because English is what v1 ships.
 
-Everything else in the stack is permissive either way (Kokoro weights and ONNX exports Apache-2.0, `misaki` Apache-2.0, `kokoro-onnx` MIT, `ort`/`rodio` MIT OR Apache-2.0, `cmudict-fast` MIT/Apache-2.0, `jieba-rs`/`pinyin`/`chinese-number` MIT), so this single decision closes the whole question. Whichever you pick, add an **"Open-source licences"** screen listing Kokoro, those two CC BY training corpora, espeak-ng if present, and every crate — it doubles as the required attribution and as the answer to "why does this app want Accessibility?".
+Third-party code and assets retain their upstream terms (including MIT, BSD, Apache-2.0, and the Kokoro corpora's CC BY terms). Keep an **"Open-source licences"** screen listing Kokoro, those two CC BY training corpora, espeak-ng if present, and every crate.
 
 ### Packaging and runtime shape
 
@@ -351,7 +351,7 @@ Scaffolding for the spike lives in `/Users/home/.hermes/cache/scratch/kokoro_spi
 2. Chunk seams and prosody resets across sentence boundaries; cross-fade mitigates, does not eliminate.
 3. A resident model in a menu-bar utility is a real energy/RAM cost — measured at **478 MB peak RSS for fp32**, 578 MB for fp16, 245 MB for q8f16.
 4. The first-run 86–163 MB download sits awkwardly against a "no setup required" promise — mitigate with `say` as the immediate degraded engine plus a tray progress row.
-5. Multilingual coverage is out of v1 by decision, and espeak-ng stays an arm's-length optional subprocess — so the licence surface of the repo stays `MIT OR Apache-2.0` no matter what the user installs.
+5. Multilingual coverage is out of v1 by decision, and espeak-ng stays an arm's-length optional subprocess — so the project remains licensed under Apache-2.0 regardless of what the user installs.
 
 ### The engine lineup after this change: `say`, Kokoro, and Chatterbox Multilingual
 
@@ -491,7 +491,7 @@ Explicitly *not* in v0: history, streaming word-highlight, per-app shortcuts, th
 
 ## 9. Open product questions for you
 
-1. ~~Is kiegen closed-source/commercial?~~ **Decided: open source, `MIT OR Apache-2.0`** — the permissive option, with `cargo-deny` enforcing it so GPL cannot drift back in (§5).
+1. ~~Is kiegen closed-source/commercial?~~ **Decided: open source, Apache-2.0 only** — with dependency licence checks in `cargo-deny` (§5).
 2. ~~English-only for v1, or the full 9 languages?~~ **Decided: English only for v1.** Mandarin/Japanese remain reachable later; the other five (Spanish, French, Hindi, Italian, Portuguese) are an optional user-installed espeak-ng path, documented, never shipped. **Partly superseded:** a second engine — Chatterbox Multilingual — now offers 23 languages, none of them through espeak, so the "which languages" question is answered twice over: Kokoro's 9 codes, and Chatterbox's 23 for everything Kokoro cannot reach without GPL code (§5).
 3. Does the audio **play** and/or get **written to a file** by default? "Speak" vs "Speak to file" as separate chords is the plan.
 4. Should the user be able to configure **per-app** shortcuts/voices, or is one global chord enough for v1?

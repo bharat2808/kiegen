@@ -56,6 +56,11 @@ pub fn is_trusted() -> bool {
     platform::is_trusted()
 }
 
+/// Show macOS's first-run Accessibility permission prompt when access is missing.
+pub fn request_accessibility() -> bool {
+    platform::request_accessibility()
+}
+
 /// A copy-mode capture while secure input is on would leak nothing (the OS blocks it)
 /// but would also silently fail; detecting it lets us say something useful instead.
 pub fn secure_input_active() -> bool {
@@ -68,10 +73,12 @@ mod platform {
     use super::CaptureError;
     use accessibility_sys::{
         kAXErrorSuccess, kAXFocusedUIElementAttribute, kAXSelectedTextAttribute,
-        AXIsProcessTrusted, AXUIElementCopyAttributeValue, AXUIElementCreateSystemWide,
-        AXUIElementRef,
+        kAXTrustedCheckOptionPrompt, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+        AXUIElementCopyAttributeValue, AXUIElementCreateSystemWide, AXUIElementRef,
     };
     use core_foundation::base::{CFGetTypeID, CFRelease, CFTypeRef, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
     use core_foundation::string::{CFString, CFStringRef};
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -81,6 +88,14 @@ mod platform {
 
     pub fn is_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
+    }
+
+    /// Ask macOS to show its Accessibility permission prompt.
+    pub fn request_accessibility() -> bool {
+        let prompt_key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+        let options: CFDictionary<CFString, CFBoolean> =
+            CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
+        unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
     }
 
     /// `IsSecureEventInputEnabled()` lives in HIToolbox. Resolve it at runtime rather than
@@ -273,6 +288,10 @@ mod platform {
     use super::CaptureError;
 
     pub fn is_trusted() -> bool {
+        false
+    }
+
+    pub fn request_accessibility() -> bool {
         false
     }
 

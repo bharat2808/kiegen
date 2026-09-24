@@ -125,6 +125,6 @@ This test plays audio and measures cold/warm playback startup, buffer underruns,
 
 ## License
 
-Kiegen is licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Downloaded models and separately installed tools retain their own licenses. Dependency-license checks are defined in [`deny.toml`](deny.toml) and [`scripts/check-licenses.sh`](scripts/check-licenses.sh).
+Kiegen is licensed under [Apache-2.0](LICENSE-APACHE). Downloaded models and separately installed tools retain their own licenses. Dependency-license checks are defined in [`deny.toml`](deny.toml) and [`scripts/check-licenses.sh`](scripts/check-licenses.sh).
 
 Maintained by **bharat2808**.

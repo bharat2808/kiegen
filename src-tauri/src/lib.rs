@@ -606,8 +606,19 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let handle = app.handle().clone();
-            let settings = config::load(&handle);
+            let mut settings = config::load(&handle);
             let voices = speech::list_voices();
+
+            // Request Accessibility once on first launch. macOS owns the prompt and the
+            // user grants access in System Settings; keep the settings pane visible as a
+            // fallback with instructions if the system prompt was dismissed.
+            if !capture::is_trusted() && !settings.accessibility_prompted {
+                capture::request_accessibility();
+                settings.accessibility_prompted = true;
+                if let Err(error) = config::save(&handle, &settings) {
+                    eprintln!("[kiegen] could not save Accessibility prompt state: {error}");
+                }
+            }
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
@@ -624,8 +635,8 @@ pub fn run() {
             install_tray(&handle)?;
             overlay::setup(&handle)?;
 
-            // First run: nothing is bound, nothing is granted — put the window in front
-            // of the user once. Afterwards the tray is the only way in.
+            // While Accessibility is missing, put the settings instructions in front of
+            // the user; afterwards the tray is the only way in.
             if !capture::is_trusted() {
                 show_settings(&handle);
             }

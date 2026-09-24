@@ -866,7 +866,7 @@ export default function App() {
             </Card>
 
             <Card title="About" icon={Icon.box()}>
-              <div className="card-note">Version 0.1.0 · MIT OR Apache-2.0</div>
+              <div className="card-note">Version 0.1.0 · Apache-2.0</div>
               <div className="field">
                 <span className="field-label">Settings file</span>
                 <div className="mono-block">{state.config_path}</div>

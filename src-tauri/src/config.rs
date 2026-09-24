@@ -53,7 +53,7 @@ pub enum Engine {
     /// tiers. Zero download, zero dependencies, subprocess only.
     #[default]
     Apple,
-    /// Local Kokoro-82M over ONNX. Opt-in: `MIT OR Apache-2.0` and no espeak, but the
+    /// Local Kokoro-82M over ONNX. Opt-in: Apache-2.0-compatible runtime with no espeak, but the
     /// weights are a separate download and never ship inside the bundle.
     Kokoro,
     /// Local Chatterbox **Multilingual** (Resemble AI) over ONNX. MIT, 23 languages, and —
@@ -134,6 +134,8 @@ impl Default for ChatterboxSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Whether the macOS Accessibility prompt has been requested on a previous launch.
+    pub accessibility_prompted: bool,
     pub shortcuts: Shortcuts,
     /// Which engine speaks. Apple unless the user opts into a local model.
     pub engine: Engine,
@@ -153,6 +155,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            accessibility_prompted: false,
             shortcuts: Shortcuts::default(),
             engine: Engine::default(),
             kokoro: KokoroSettings::default(),

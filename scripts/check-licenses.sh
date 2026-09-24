@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kiegen ships under MIT OR Apache-2.0. This script mechanically enforces that:
+# kiegen ships under Apache-2.0. This script mechanically checks dependency licences:
 # it reads the licence of every crate in the resolved dependency graph and fails if
 # anything copyleft reaches the *runtime* graph.
 #
