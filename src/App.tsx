@@ -443,11 +443,20 @@ export default function App() {
   // the only answer the user gets, and a refusal here is a reason, not a transient toast.
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
   const rateTimer = useRef<number | null>(null);
+  const latestState = useRef(state);
+  const saveTail = useRef<Promise<void>>(Promise.resolve());
+  const saveRevision = useRef(0);
+  const pendingSaves = useRef(0);
 
   const refresh = useCallback(async () => {
+    if (pendingSaves.current > 0) return;
+    const revision = saveRevision.current;
     try {
       const next = await invoke<UiState>("get_state");
-      setState(next);
+      if (pendingSaves.current === 0 && revision === saveRevision.current) {
+        latestState.current = next;
+        setState(next);
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -482,20 +491,30 @@ export default function App() {
 
   const save = useCallback(
     async (patch: Partial<Settings>) => {
-      const current = state;
+      const current = latestState.current;
       if (!current) return;
       const next: Settings = { ...current.settings, ...patch };
+      latestState.current = { ...current, settings: next };
       setState({ ...current, settings: next }); // optimistic: a click must not lag
+      const revision = ++saveRevision.current;
+      pendingSaves.current++;
+      const request = saveTail.current.then(() => invoke<UiState>("save_settings", { settings: next }));
+      saveTail.current = request.then(() => {}, () => {});
       try {
-        const updated = await invoke<UiState>("save_settings", { settings: next });
-        setState(updated);
-        setError(null);
+        const updated = await request;
+        if (revision === saveRevision.current) {
+          latestState.current = updated;
+          setState(updated);
+          setError(null);
+        }
       } catch (e) {
         setError(String(e));
-        void refresh();
+      } finally {
+        pendingSaves.current--;
+        if (pendingSaves.current === 0) void refresh();
       }
     },
-    [state, refresh],
+    [refresh],
   );
 
   /* Voice + language derivation. */
@@ -613,11 +632,12 @@ export default function App() {
   const preview = useCallback(
     (voice: Voice | string | null) => {
       if (!state) return;
-      void invoke("preview_voice", {
+      void saveTail.current.then(() => invoke("preview_voice", {
+        engine: state.settings.engine,
         voice: typeof voice === "string" ? voice : voice?.name ?? null,
         rate: state.settings.rate,
         text: null,
-      }).catch((e) => setError(String(e)));
+      })).catch((e) => setError(String(e)));
     },
     [state],
   );
@@ -691,7 +711,8 @@ export default function App() {
     }
     if (!path) return;
     try {
-      setState(await invoke<UiState>("add_chatterbox_voice", { path }));
+      await invoke<UiState>("add_chatterbox_voice", { path });
+      await refresh();
       setVoiceMessage("Voice added.");
     } catch (e) {
       setVoiceMessage(String(e));
@@ -702,7 +723,8 @@ export default function App() {
   const deleteVoice = async (file: string) => {
     setVoiceMessage(null);
     try {
-      setState(await invoke<UiState>("delete_chatterbox_voice", { file }));
+      await invoke<UiState>("delete_chatterbox_voice", { file });
+      await refresh();
       setVoiceMessage("Voice deleted.");
     } catch (e) {
       setVoiceMessage(String(e));

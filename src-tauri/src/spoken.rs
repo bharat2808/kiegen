@@ -251,7 +251,7 @@ impl Spoken {
     ) -> Result<(Report, f64, f64), String>
     where
         C: Fn() -> bool + Sync,
-        P: FnMut(&crate::pcm::Player) -> Result<(), String>,
+        P: FnMut(&Arc<crate::pcm::Player>) -> Result<(), String>,
     {
         use std::time::{Duration, Instant};
         let began = Instant::now();
@@ -267,7 +267,6 @@ impl Spoken {
         let first_chars = chunks[0].chars().count().max(1);
         let next_chars = chunks.get(1).map(|s| s.chars().count()).unwrap_or(0);
         let player = Arc::new(crate::pcm::Player::new()?);
-        *self.pcm.lock().unwrap() = Some(player.clone());
         let mut total = Report {
             chars: 0,
             phonemes: 0,
@@ -336,7 +335,7 @@ impl Spoken {
         });
         let underrun = player.underrun_seconds();
         player.stop();
-        self.pcm.lock().unwrap().take();
+        self.detach_pcm(&player);
         self.release_idle_models();
         let latency = started.unwrap_or(0.0);
         eprintln!("{:?} PCM: chunks={received} start={latency:.3}s audio={:.3}s underrun={underrun:.3}s startup_target={startup_target:.3}s peak_buffer={peak_buffer:.3}s", settings.engine, total.seconds);
@@ -493,6 +492,18 @@ impl Spoken {
         Ok(())
     }
 
+    /// Called while the speech-job lock proves this is still the active request.
+    pub(crate) fn activate_pcm(&self, player: Arc<crate::pcm::Player>) {
+        *self.pcm.lock().unwrap() = Some(player);
+    }
+
+    fn detach_pcm(&self, player: &Arc<crate::pcm::Player>) {
+        let mut current = self.pcm.lock().unwrap();
+        if current.as_ref().is_some_and(|p| Arc::ptr_eq(p, player)) {
+            current.take();
+        }
+    }
+
     /// Silence whatever is playing. Safe to call when idle.
     pub fn stop(&self) {
         self.speech.stop();
@@ -587,6 +598,22 @@ fn chatterbox_language_guard(language: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::Settings;
+
+    #[test]
+    fn cancelled_stream_cleanup_preserves_current_player() {
+        let spoken = Spoken::new();
+        let old = Arc::new(crate::pcm::Player::new().unwrap());
+        let current = Arc::new(crate::pcm::Player::new().unwrap());
+        spoken.activate_pcm(old.clone());
+        spoken.activate_pcm(current.clone());
+        spoken.detach_pcm(&old);
+        assert!(Arc::ptr_eq(
+            spoken.pcm.lock().unwrap().as_ref().unwrap(),
+            &current
+        ));
+        spoken.detach_pcm(&current);
+        assert!(spoken.pcm.lock().unwrap().is_none());
+    }
 
     #[test]
     fn an_engine_that_cannot_work_refuses_instead_of_falling_back() {
@@ -906,6 +933,7 @@ mod tests {
                 "Hello there. Good morning. Have a nice day.",
                 || stopped.load(Ordering::SeqCst),
                 |player| {
+                    spoken.activate_pcm(player.clone());
                     player.start()?;
                     count += 1;
                     spoken.stop();
@@ -916,6 +944,41 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert!(!spoken.is_speaking());
+    }
+
+    #[test]
+    #[ignore = "needs both installed engines and plays test audio"]
+    fn switching_real_engines_keeps_playback_usable() {
+        let spoken = Spoken::new();
+        for engine in [
+            Engine::Kokoro,
+            Engine::Chatterbox,
+            Engine::Kokoro,
+            Engine::Chatterbox,
+        ] {
+            spoken.stop();
+            let settings = Settings {
+                engine,
+                ..Settings::default()
+            };
+            let mut started = false;
+            let (report, _, _) = spoken
+                .stream_pcm(
+                    &settings,
+                    "Hello.",
+                    || false,
+                    |player| {
+                        spoken.activate_pcm(player.clone());
+                        player.start()?;
+                        started = true;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert!(started, "{engine:?} did not start");
+            assert!(report.seconds > 0.0);
+            assert!(spoken.pcm.lock().unwrap().is_none());
+        }
     }
 
     /// Real-model cache regression: remove only our temporary link to the graphs

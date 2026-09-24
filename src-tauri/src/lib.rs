@@ -8,6 +8,7 @@ mod capture;
 pub mod chatterbox;
 pub mod config;
 pub mod download;
+mod engine_locks;
 pub mod engine_paths;
 pub mod engines;
 pub mod espeak;
@@ -48,7 +49,7 @@ const ACCESSIBILITY_PANE: &str =
 pub struct AppState {
     pub settings: Mutex<Settings>,
     job: Mutex<speech_job::SpeechJob>,
-    synthesis: Mutex<()>,
+    synthesis: engine_locks::EngineLocks,
     /// Every engine the app can speak with, routed by the settings. The Apple path lives
     /// inside it rather than beside it so there is one place that decides what speaks.
     pub spoken: spoken::Spoken,
@@ -140,11 +141,11 @@ fn job_status(
     }
 }
 
-/// Serialize synthesis, but keep Stop independent of the model lock. A canceled
+/// Serialize synthesis per engine, keeping Stop and other engines independent. A canceled
 /// render may finish computing; only the current job is allowed to start playback.
 fn run_speech(app: &AppHandle, id: u64, settings: Settings, text: String, truncated: bool) {
     let state = app.state::<AppState>();
-    let _synthesis = state.synthesis.lock().unwrap();
+    let _synthesis = state.synthesis.for_engine(settings.engine).lock().unwrap();
     if !state.job.lock().unwrap().is_current(id) {
         return;
     }
@@ -192,6 +193,7 @@ fn run_speech(app: &AppHandle, id: u64, settings: Settings, text: String, trunca
                 if !job.is_current(id) {
                     return Ok(());
                 }
+                state.spoken.activate_pcm(player.clone());
                 player.start()?;
                 job.set(Phase::Speaking, None, Some(chars));
                 let _ = app.emit("kiegen:status", &job.status);
@@ -301,7 +303,16 @@ fn get_state(app: AppHandle) -> UiState {
 fn save_settings(app: AppHandle, settings: Settings) -> Result<UiState, String> {
     shortcuts::bindings(&settings)?; // validate before writing anything
     config::save(&app, &settings)?;
-    *app.state::<AppState>().settings.lock().unwrap() = settings.clone();
+    let changed_engine = {
+        let state = app.state::<AppState>();
+        let mut current = state.settings.lock().unwrap();
+        let changed = current.engine != settings.engine;
+        *current = settings.clone();
+        changed
+    };
+    if changed_engine {
+        stop_speaking(app.clone());
+    }
     let refused = shortcuts::apply(&app)?;
     Ok(ui_state(&app, refused))
 }
@@ -322,9 +333,18 @@ fn speak_text(app: AppHandle, text: String) {
 /// Audition a voice without committing to it. The voice browser previews rows this
 /// way, so clicking through the list never silently rewrites the saved setting.
 #[tauri::command]
-fn preview_voice(app: AppHandle, voice: Option<String>, rate: u32, text: Option<String>) {
-    let id = begin_speech(&app, Phase::Preparing);
+fn preview_voice(
+    app: AppHandle,
+    engine: config::Engine,
+    voice: Option<String>,
+    rate: u32,
+    text: Option<String>,
+) {
     let mut settings = app.state::<AppState>().settings.lock().unwrap().clone();
+    if settings.engine != engine {
+        return;
+    }
+    let id = begin_speech(&app, Phase::Preparing);
     settings.rate = rate;
     match settings.engine {
         config::Engine::Apple => settings.voice = voice,
@@ -592,7 +612,7 @@ pub fn run() {
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 job: Mutex::new(speech_job::SpeechJob::default()),
-                synthesis: Mutex::new(()),
+                synthesis: engine_locks::EngineLocks::default(),
                 spoken: spoken::Spoken::new(),
                 voices,
                 bindings: Mutex::new(Vec::new()),
