@@ -78,8 +78,9 @@ impl Kokoro {
             return Err(format!("voice file {voice:?} is not a float32 array"));
         }
         let mut styles = Vec::with_capacity(bytes.len() / 4);
-        for chunk in bytes.chunks_exact(4) {
-            styles.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        let (chunks, _) = bytes.as_chunks::<4>();
+        for chunk in chunks {
+            styles.push(f32::from_le_bytes(*chunk));
         }
         let row_count = styles.len() / STYLE_WIDTH;
         if row_count < 2 {

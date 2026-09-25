@@ -308,7 +308,7 @@ impl Chatterbox {
         let mut inputs_embeds = Vec::with_capacity(cond.len() + embeds.len());
         inputs_embeds.append(&mut cond.clone());
         inputs_embeds.append(&mut embeds);
-        let mut mask_len = cond_len + text_len;
+        let initial_mask_len = cond_len + text_len;
 
         // ── the cache, empty and typed as the graph declares it ──────────────────
         let mut past: Vec<DynValue> = (0..self.kv_inputs.len())
@@ -322,6 +322,7 @@ impl Chatterbox {
 
         let loop_started = Instant::now();
         for step in 0..MAX_NEW_TOKENS {
+            let mask_len = initial_mask_len + step;
             let mut named: Vec<(std::borrow::Cow<'_, str>, SessionInputValue<'_>)> =
                 Vec::with_capacity(3 + kv_inputs.len());
             let frames = inputs_embeds.len() / dim;
@@ -377,7 +378,6 @@ impl Chatterbox {
             // reference's `position_ids = np.full((b, 1), i + 1)`.
             let position = vec![(step + 1) as i64];
             inputs_embeds = self.embed_tokens(&[next], &position)?;
-            mask_len += 1;
         }
         let loop_seconds = loop_started.elapsed().as_secs_f64();
 
