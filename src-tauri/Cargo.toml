@@ -1,6 +1,6 @@
 [package]
 name = "kiegen"
-version = "0.1.1"
+version = "0.1.2"
 description = "Speak any selected text, from anywhere in macOS"
 authors = ["bharat2808 <vermabhrat642@gmail.com>"]
 edition = "2021"
@@ -27,6 +27,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2.3.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Selection capture + synthetic key events.
 # Invariant: dependencies are compatible with distributing kiegen under Apache-2.0. No GPL.

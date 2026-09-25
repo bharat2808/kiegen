@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "kiegen",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.kiegen.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,6 +31,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "signingIdentity": "Developer ID Application: Bharat Bharat (BQVR37A9HG)",
       "hardenedRuntime": true
@@ -45,5 +46,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2Q0VFQjgyMzgzNjVDREEKUldUYVhEWTRndXZPaHRzV0pyNElhTFZ3VnR2QlhwRk1aN2xVanh3eGFZN3k2ZTM1UWpqUGM0LzQK",
+      "endpoints": [
+        "https://github.com/bharat2808/kiegen/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

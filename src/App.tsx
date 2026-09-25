@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import "./App.css";
 
 /* ── types mirroring the Rust side ─────────────────────────────────── */
@@ -434,6 +436,10 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("general");
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const [error, setError] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
   const [language, setLanguage] = useState<string | null>(null);
   const [showNovelty, setShowNovelty] = useState(false);
   const [recording, setRecording] = useState<"speak" | "stop" | null>(null);
@@ -447,6 +453,50 @@ export default function App() {
   const saveTail = useRef<Promise<void>>(Promise.resolve());
   const saveRevision = useRef(0);
   const pendingSaves = useRef(0);
+  const updateDownload = useRef({ downloaded: 0, total: 0 });
+
+  const checkForUpdates = useCallback(async () => {
+    setCheckingUpdate(true);
+    setUpdateMessage("Checking for updates…");
+    setUpdateAvailable(null);
+    try {
+      const update = await check();
+      setUpdateAvailable(update);
+      setUpdateMessage(update ? `Version ${update.version} is available.` : "You're up to date.");
+    } catch (e) {
+      setUpdateMessage(`Could not check for updates: ${String(e)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, []);
+
+  const installAvailableUpdate = useCallback(async () => {
+    if (!updateAvailable) return;
+    setInstallingUpdate(true);
+    setUpdateMessage(`Downloading version ${updateAvailable.version}…`);
+    try {
+      await updateAvailable.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          updateDownload.current = { downloaded: 0, total: event.data.contentLength ?? 0 };
+          setUpdateMessage("Downloading update…");
+        } else if (event.event === "Progress") {
+          updateDownload.current.downloaded += event.data.chunkLength;
+          const { downloaded, total } = updateDownload.current;
+          setUpdateMessage(
+            total
+              ? `Downloading update (${formatBytes(downloaded)} of ${formatBytes(total)})…`
+              : `Downloaded ${formatBytes(downloaded)}…`,
+          );
+        } else {
+          setUpdateMessage("Installing update and restarting…");
+        }
+      });
+      await relaunch();
+    } catch (e) {
+      setUpdateMessage(`Update failed: ${String(e)}`);
+      setInstallingUpdate(false);
+    }
+  }, [updateAvailable]);
 
   const refresh = useCallback(async () => {
     if (pendingSaves.current > 0) return;
@@ -866,7 +916,18 @@ export default function App() {
             </Card>
 
             <Card title="About" icon={Icon.box()}>
-              <div className="card-note">Version 0.1.1 · Apache-2.0</div>
+              <div className="card-note">Version 0.1.2 · Apache-2.0</div>
+              <div className="inline">
+                <button className="plain" onClick={() => void checkForUpdates()} disabled={checkingUpdate || installingUpdate}>
+                  {checkingUpdate ? "Checking…" : "Check for Updates"}
+                </button>
+                {updateAvailable ? (
+                  <button className="plain" onClick={() => void installAvailableUpdate()} disabled={installingUpdate}>
+                    {installingUpdate ? "Installing…" : `Install ${updateAvailable.version}`}
+                  </button>
+                ) : null}
+              </div>
+              {updateMessage ? <div className="card-note" role="status">{updateMessage}</div> : null}
               <div className="field">
                 <span className="field-label">Settings file</span>
                 <div className="mono-block">{state.config_path}</div>
