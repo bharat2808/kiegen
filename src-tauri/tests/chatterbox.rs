@@ -63,9 +63,10 @@ fn read_wav(path: &Path) -> (u32, Vec<f32>) {
     assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 1, "not mono");
     let rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
     assert_eq!(&bytes[36..40], b"data", "no data chunk in {path:?}");
-    let samples = bytes[44..]
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+    let (sample_chunks, _) = bytes[44..].as_chunks::<2>();
+    let samples = sample_chunks
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32768.0)
         .collect();
     (rate, samples)
 }
