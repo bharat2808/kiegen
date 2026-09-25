@@ -59,6 +59,10 @@ jobs:
       - run: npm ci
       - name: build the .app
         run: npm run tauri build
+        # CI validates the bundle without importing the Developer ID private key.
+        # Official releases use the Bharat Developer ID identity from tauri.conf.json.
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
       - uses: actions/upload-artifact@v4
         with:
           name: texthalo-app
