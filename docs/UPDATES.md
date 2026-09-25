@@ -20,8 +20,9 @@ owner-only file permissions. Never attach it to a release or commit it.
 2. Build with the updater key available to Tauri:
 
    ```sh
-   export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/kiegen-updater.key"
-   npm run tauri build -- --bundles app
+   TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/kiegen-updater.key")" \
+   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+     npm run tauri build -- --bundles app
    ```
 
    The bundle directory contains `kiegen.app`, `kiegen.app.tar.gz`, and
