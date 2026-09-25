@@ -58,7 +58,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: build the .app
-        run: npm run tauri build
+        run: npm run tauri build -- --config src-tauri/tauri.ci.conf.json
         # CI validates the bundle without importing the Developer ID private key.
         # Official releases use the Bharat Developer ID identity from tauri.conf.json.
         env:
