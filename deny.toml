@@ -12,7 +12,17 @@ targets = [{ triple = "aarch64-apple-darwin" }, { triple = "x86_64-apple-darwin"
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+# These advisories are for unmaintained transitive crates with no compatible upstream
+# replacement available through the current dependency tree. Revisit when tokenizers/Tauri
+# remove them; the Rustls vulnerability remains unignored and is fixed in Cargo.lock.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is transitively required by tokenizers; no safe compatible replacement is available" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property is pulled by Tauri urlpattern; no compatible upstream replacement is available" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range is pulled by Tauri urlpattern; no compatible upstream replacement is available" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common is pulled by Tauri urlpattern; no compatible upstream replacement is available" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is pulled by Tauri urlpattern; no compatible upstream replacement is available" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is pulled by Tauri urlpattern; no compatible upstream replacement is available" },
+]
 
 [licenses]
 version = 2
@@ -36,6 +46,7 @@ allow = [
     "BSL-1.0",
     "OpenSSL",
     "NCSA",
+    "CDLA-Permissive-2.0",
 ]
 
 # Weak/file-level copyleft present transitively via Tauri itself (dom_query pulls
@@ -49,10 +60,6 @@ exceptions = [
     { allow = ["MPL-2.0"], crate = "selectors" },
     { allow = ["MPL-2.0"], crate = "option-ext" },
 ]
-
-# Anything here fails the build outright.
-[[licenses.deny]]
-licenses = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "SSPL-1.0", "CPL-1.0", "OSL-3.0", "EUPL-1.2"]
 
 [bans]
 multiple-versions = "allow"     # a Tauri app legitimately carries several of several crates

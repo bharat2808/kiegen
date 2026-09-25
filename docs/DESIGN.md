@@ -300,7 +300,7 @@ The project license applies to kiegen's original code. Every bundled dependency,
 
 **Licence hygiene, mechanically enforced (so this cannot drift back in):**
 
-- **`cargo-deny` 0.20.2** (`EmbarkStudios/cargo-deny`) in CI with an explicit `licenses.deny` list — `GPL-3.0`, `AGPL-3.0`, `SSPL-1.0` and friends — and `cargo deny check licenses` as a required check. A policy in a document does not survive six months; a failing CI job does.
+- **`cargo-deny` 0.20.2** (`EmbarkStudios/cargo-deny`) in CI with an explicit license allowlist and named exceptions for the reviewed MPL-2.0 dependencies. Unknown or unapproved licenses fail the check, which also excludes GPL, AGPL, SSPL, and other unlisted licenses. A policy in a document does not survive six months; a failing CI job does.
 - **No vendored espeak-ng, ever** — not the binary, not the data, not a git submodule, not "just for tests". Its absence from the repo is the whole point.
 - **Check every runtime dependency's own licence and redistribute its notices.** The project itself is Apache-2.0-only; dependencies remain under their upstream licences, including MIT, BSD, and Apache-2.0.
 - Keep a `NOTICE` file and an "Open-source licences" screen — the app-side obligation of Apache-2.0 is attribution, and it doubles as the required credit for Kokoro's two CC BY training corpora.
