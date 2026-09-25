@@ -386,7 +386,7 @@ impl Spoken {
         let engine = &mut guard.as_mut().expect("just loaded").engine;
         let utterance = engine.synthesize(text, &language, &clip)?;
         eprintln!(
-            "[kiegen] chatterbox {} {:?}: {} steps, {} speech tokens, {:.2}s of audio in {:.2}s \
+            "[TextHalo] chatterbox {} {:?}: {} steps, {} speech tokens, {:.2}s of audio in {:.2}s \
              (encoder {:.2}s, loop {:.2}s, decoder {:.2}s)",
             language,
             clip.file_name().unwrap_or_default(),

@@ -182,7 +182,7 @@ pub fn load(app: &AppHandle) -> Settings {
     let path = settings_path(app);
     match std::fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("[kiegen] settings at {path:?} are invalid ({e}); using defaults");
+            eprintln!("[TextHalo] settings at {path:?} are invalid ({e}); using defaults");
             Settings::default()
         }),
         Err(_) => Settings::default(),

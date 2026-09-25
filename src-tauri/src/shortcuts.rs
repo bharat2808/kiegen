@@ -67,7 +67,7 @@ pub fn apply(app: &AppHandle) -> Result<Vec<String>, String> {
     let mut refused = Vec::new();
     for binding in &bindings {
         if let Err(e) = manager.register(binding.shortcut) {
-            eprintln!("[kiegen] OS refused {:?}: {e}", binding.shortcut);
+            eprintln!("[TextHalo] OS refused {:?}: {e}", binding.shortcut);
             refused.push(binding.shortcut.to_string());
         }
     }

@@ -155,7 +155,7 @@ impl Chatterbox {
         let lm = load_session(&dir.join(crate::engine_paths::CHATTERBOX_LM_FILE))?;
         let decoder = load_session(&dir.join(crate::engine_paths::CHATTERBOX_DECODER_FILE))?;
         eprintln!(
-            "[kiegen] chatterbox: 4 graphs in {:.2}s",
+            "[TextHalo] chatterbox: 4 graphs in {:.2}s",
             t.elapsed().as_secs_f64()
         );
 
@@ -168,7 +168,7 @@ impl Chatterbox {
             Ok(map) => Some(map),
             Err(error) => {
                 // Not fatal: only `zh` needs it, and `zh` says so when it is asked for.
-                eprintln!("[kiegen] chatterbox: no Cangjie mapping ({error}); zh will refuse");
+                eprintln!("[TextHalo] chatterbox: no Cangjie mapping ({error}); zh will refuse");
                 None
             }
         };

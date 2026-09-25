@@ -304,7 +304,7 @@ pub fn list_voices() -> Vec<Voice> {
     let output = match Command::new(SAY).arg("-v").arg("?").output() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[kiegen] could not list voices: {e}");
+            eprintln!("[TextHalo] could not list voices: {e}");
             return Vec::new();
         }
     };
