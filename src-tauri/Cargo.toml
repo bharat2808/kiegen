@@ -1,6 +1,6 @@
 [package]
 name = "kiegen"
-version = "0.1.2"
+version = "0.1.3"
 description = "Speak any selected text, from anywhere in macOS"
 authors = ["bharat2808 <vermabhrat642@gmail.com>"]
 edition = "2021"

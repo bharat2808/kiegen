@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 jobs:
@@ -61,5 +61,5 @@ jobs:
         run: npm run tauri build
       - uses: actions/upload-artifact@v4
         with:
-          name: kiegen-app
-          path: src-tauri/target/release/bundle/macos/kiegen.app
+          name: texthalo-app
+          path: src-tauri/target/release/bundle/macos/TextHalo.app

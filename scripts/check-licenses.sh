@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# kiegen ships under Apache-2.0. This script mechanically checks dependency licences:
+# TextHalo ships under Apache-2.0. This script mechanically checks dependency licences:
 # it reads the licence of every crate in the resolved dependency graph and fails if
 # anything copyleft reaches the *runtime* graph.
 #
 # Two distinct questions, deliberately answered differently:
 #   * runtime graph  (normal edges)  → strict. Anything GPL/AGPL/SSPL fails the build.
 #   * build/dev graph (build edges)  → informational. Build scripts are compiled into a
-#     throwaway tool binary and are NOT distributed inside kiegen.app, so cssparser and
+#     throwaway tool binary and are NOT distributed inside TextHalo.app, so cssparser and
 #     selectors arriving via tauri-build are noted, not blockers.
 #
 # Weak/file-level copyleft (MPL-2.0, LGPL, EPL, CDDL) warns: linking is fine, and these
@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../src-tauri"
 
 REGISTRY="${CARGO_HOME:-$HOME/.cargo}/registry/src"
-# Hard fail: copyleft that would relicense kiegen or block permissive distribution.
+# Hard fail: copyleft that would relicense TextHalo or block permissive distribution.
 DENY_ATOMS='GPL-1.0|GPL-2.0|GPL-3.0|AGPL-1.0|AGPL-3.0|SSPL-1.0|CPL-1.0|OSL-3.0|EUPL-1.2|CC-BY-SA-4.0|CECILL-2.1'
 # Warn only: weak or file-level copyleft, compatible with a permissive project.
 WARN_ATOMS='MPL-2.0|LGPL-2.1|LGPL-3.0|EPL-2.0|CDDL-1.0'

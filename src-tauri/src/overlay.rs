@@ -9,7 +9,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         "speech-overlay",
         WebviewUrl::App("index.html?overlay".into()),
     )
-    .title("Kiegen speech")
+    .title("TextHalo speech")
     .inner_size(270.0, 44.0)
     .decorations(false)
     .transparent(true)

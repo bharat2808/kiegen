@@ -28,7 +28,7 @@ impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
             Self::NoPermission => {
-                "kiegen needs Accessibility permission (System Settings → Privacy & Security → Accessibility)"
+                "TextHalo needs Accessibility permission (System Settings → Privacy & Security → Accessibility)"
             }
             Self::NoSelection => "no selected text found",
             Self::Timeout => "nothing was copied — is text selected?",

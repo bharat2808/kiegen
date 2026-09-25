@@ -1,6 +1,6 @@
 # cargo-deny configuration — the CI-enforced half of the licence decision.
 #
-# kiegen is Apache-2.0 only (docs/DESIGN.md §5). This file makes "no GPL in the runtime graph"
+# TextHalo is Apache-2.0 only (docs/DESIGN.md §5). This file makes "no GPL in the runtime graph"
 # a failing check rather than a promise. Run locally with:
 #     cargo install cargo-deny && cargo deny check
 #
@@ -18,7 +18,7 @@ ignore = []
 version = 2
 # Confidence threshold: 0.9 is cargo-deny's default; lower only if CI is noisy.
 confidence-threshold = 0.9
-# Permissive dependency licences compatible with distributing kiegen under Apache-2.0.
+# Permissive dependency licences compatible with distributing TextHalo under Apache-2.0.
 allow = [
     "MIT",
     "MIT-0",
@@ -40,7 +40,7 @@ allow = [
 
 # Weak/file-level copyleft present transitively via Tauri itself (dom_query pulls
 # cssparser + selectors; dirs pulls option-ext). MPL-2.0 is file-scoped: we do not modify
-# those crates, and it does not relicense kiegen. Listed explicitly so it is a decision
+# those crates, and it does not relicense TextHalo. Listed explicitly so it is a decision
 # rather than an accident — remove these and CI fails until the dependency is replaced.
 exceptions = [
     { allow = ["MPL-2.0"], crate = "cssparser" },

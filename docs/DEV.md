@@ -1,4 +1,4 @@
-# Developing kiegen
+# Developing TextHalo
 
 Everything here is about the one thing that makes this app awkward to develop: **macOS
 permission**. The Rust is ordinary; the TCC grant is not.
@@ -17,7 +17,7 @@ Two habits make this bearable:
 # 1. Clear the stale grant so the app reappears cleanly in the list
 tccutil reset Accessibility com.kiegen.app
 
-# 2. Re-open the pane, toggle kiegen on, done
+# 2. Re-open the pane, toggle TextHalo on, done
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 ```
 
@@ -38,7 +38,7 @@ log stream --predicate 'process == "kiegen"' --level info
 ./src-tauri/target/release/kiegen
 ```
 
-`[kiegen] capture failed: …` is the line to watch. It is emitted on every failed capture
+`[TextHalo] capture failed: …` is the line to watch. It is emitted on every failed capture
 so the hotkey path is debuggable without a GUI.
 
 ## What the tests cover, and what they cannot

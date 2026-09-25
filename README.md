@@ -1,8 +1,8 @@
-# Kiegen
+# TextHalo
 
 **Select text. Press a shortcut. Hear it read aloud.**
 
-Kiegen is a macOS menu bar text-to-speech app with Apple system voices and local AI speech through Kokoro and Chatterbox. Built with Rust, Tauri, React, and TypeScript, it keeps playback controls close without taking focus away from your work.
+TextHalo is a macOS menu bar text-to-speech app with Apple system voices and local AI speech through Kokoro and Chatterbox. Built with Rust, Tauri, React, and TypeScript, it keeps playback controls close without taking focus away from your work.
 
 ## Features
 
@@ -17,9 +17,9 @@ Kiegen is a macOS menu bar text-to-speech app with Apple system voices and local
 
 ## Get started
 
-1. Launch Kiegen and open **Settings…** from its menu bar icon.
-2. Enable Kiegen in **System Settings → Privacy & Security → Accessibility**.
-3. Open **Voice**, choose an engine, and preview a voice. Apple system voices work without downloading a Kiegen model; Kokoro and Chatterbox require a model download through the app.
+1. Launch TextHalo and open **Settings…** from its menu bar icon.
+2. Enable TextHalo in **System Settings → Privacy & Security → Accessibility**.
+3. Open **Voice**, choose an engine, and preview a voice. Apple system voices work without downloading a model; Kokoro and Chatterbox require a model download through the app.
 4. Select text in another app and press **Cmd+Shift+S**.
 5. Press **Cmd+Shift+X** or click **Stop** in the overlay to stop playback.
 
@@ -42,21 +42,21 @@ Change the keyboard shortcuts in **Shortcuts**. Selection length is limited to 5
 
 Kokoro supports Spanish, French, Hindi, Italian, and Brazilian Portuguese through an installed espeak-ng executable. Japanese and Mandarin Kokoro voices are currently unavailable because their text front ends are not implemented.
 
-Chatterbox has controls for emotion intensity and keeping the model loaded. Use **Add voice…** to import a WAV reference clip; Kiegen validates and converts the clip for the model.
+Chatterbox has controls for emotion intensity and keeping the model loaded. Use **Add voice…** to import a WAV reference clip; TextHalo validates and converts the clip for the model.
 
 ### Optional espeak-ng support
 
-Kiegen detects an existing `espeak-ng` installation and invokes it as a separate CLI process. It does not bundle or link the espeak library.
+TextHalo detects an existing `espeak-ng` installation and invokes it as a separate CLI process. It does not bundle or link the espeak library.
 
-For English Kokoro voices, dictionary pronunciations are tried first. Unknown words use espeak-ng only when it is detected. If it is absent or cannot produce a pronunciation, Kiegen retains its letter-spelling behavior. Known words and acronyms keep their dictionary handling.
+For English Kokoro voices, dictionary pronunciations are tried first. Unknown words use espeak-ng only when it is detected. If it is absent or cannot produce a pronunciation, TextHalo retains its letter-spelling behavior. Known words and acronyms keep their dictionary handling.
 
-Detection includes standard Homebrew locations and `PATH`. For a custom installation, set `KIEGEN_ESPEAK_NG` to the executable's full path in the environment used to launch Kiegen.
+Detection includes standard Homebrew locations and `PATH`. For a custom installation, set `KIEGEN_ESPEAK_NG` to the executable's full path in the environment used to launch TextHalo.
 
 ## Text capture and privacy
 
 Speech synthesis runs locally. Selected text is not sent to a cloud speech service. Internet access is used to download model assets, including files from Hugging Face and GitHub.
 
-Kiegen requires Accessibility permission to capture another app's selection. In **Capture**, choose Accessibility-only capture to avoid using the clipboard, or use copying for apps that do not expose their selection through Accessibility. Copy-based capture can restore the previous clipboard contents; restoration is enabled by default.
+TextHalo requires Accessibility permission to capture another app's selection. In **Capture**, choose Accessibility-only capture to avoid using the clipboard, or use copying for apps that do not expose their selection through Accessibility. Copy-based capture can restore the previous clipboard contents; restoration is enabled by default.
 
 Models and imported reference voices are stored locally. Both local engines keep their continuous playback samples in memory.
 
@@ -66,13 +66,16 @@ Models and imported reference voices are stored locally. Both local engines keep
 | Models and reference voices | `~/Library/Application Support/kiegen/models/` |
 | Generated audio cache | `~/Library/Application Support/kiegen/cache/` |
 
+These existing Kiegen-named locations are retained so the TextHalo rebrand preserves
+Accessibility access, settings, models, and cached audio.
+
 ## Build from source
 
 Use macOS with Node.js 22+, npm, Rust stable, and Xcode Command Line Tools.
 
 ```bash
-git clone https://github.com/bharat2808/kiegen.git
-cd kiegen
+git clone https://github.com/bharat2808/texthalo.git
+cd texthalo
 npm ci
 npm run tauri dev
 ```
@@ -86,10 +89,10 @@ npm run tauri build -- --bundles app
 The application is written to:
 
 ```text
-src-tauri/target/release/bundle/macos/kiegen.app
+src-tauri/target/release/bundle/macos/TextHalo.app
 ```
 
-Copy `kiegen.app` to **Applications**, launch it, and enable Accessibility access. Rebuilding can invalidate the previous permission grant. If capture stops working after a rebuild, remove the stale Kiegen entry in Accessibility settings and enable the rebuilt app again.
+Copy `TextHalo.app` to **Applications**, launch it, and enable Accessibility access. Rebuilding can invalidate the previous permission grant. If capture stops working after a rebuild, remove the stale TextHalo entry in Accessibility settings and enable the rebuilt app again.
 
 ## Development checks
 
@@ -125,6 +128,6 @@ This test plays audio and measures cold/warm playback startup, buffer underruns,
 
 ## License
 
-Kiegen is licensed under [Apache-2.0](LICENSE-APACHE). Downloaded models and separately installed tools retain their own licenses. Dependency-license checks are defined in [`deny.toml`](deny.toml) and [`scripts/check-licenses.sh`](scripts/check-licenses.sh).
+TextHalo is licensed under [Apache-2.0](LICENSE-APACHE). Downloaded models and separately installed tools retain their own licenses. Dependency-license checks are defined in [`deny.toml`](deny.toml) and [`scripts/check-licenses.sh`](scripts/check-licenses.sh).
 
 Maintained by **bharat2808**.

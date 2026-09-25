@@ -164,7 +164,7 @@ window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
 
 (preview / "index.html").write_text(
     '<!doctype html>\n<html lang="en"><head><meta charset="UTF-8">'
-    '<title>kiegen preview</title>\n'
+    '<title>TextHalo preview</title>\n'
     f'<link rel="stylesheet" href="{css}"><script>{stub}</script></head>\n'
     f'<body><div id="root"></div><script type="module" src="{js}"></script></body></html>'
 )

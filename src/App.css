@@ -1,4 +1,4 @@
-/* kiegen settings — visual language replicated from freeflow-notes (SwiftUI).
+/* TextHalo settings — visual language replicated from freeflow-notes (SwiftUI).
  *
  * The mapping is deliberate, so future changes stay in one dialect:
  *   Color(nsColor: .windowBackgroundColor)      → --window-bg

@@ -1,4 +1,4 @@
-//! kiegen — a menu-bar agent that speaks any selected text.
+//! TextHalo — a menu-bar app that speaks selected text.
 //!
 //! Shape (see docs/DESIGN.md §1): no Dock icon, no window at launch, the tray is the
 //! entire persistent UI, and the settings window is created on demand. The real app is
@@ -531,7 +531,7 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     let speak = MenuItem::with_id(app, "speak", "Speak selection", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit kiegen", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit TextHalo", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::with_items(app, &[&speak, &stop, &separator, &settings, &quit])?;
@@ -539,7 +539,7 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id("kiegen")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .tooltip("kiegen — speak the selection")
+                .tooltip("TextHalo — speak the selection")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "speak" => {
                 let app = app.clone();
@@ -618,7 +618,7 @@ pub fn run() {
                 capture::request_accessibility();
                 settings.accessibility_prompted = true;
                 if let Err(error) = config::save(&handle, &settings) {
-                    eprintln!("[kiegen] could not save Accessibility prompt state: {error}");
+                    eprintln!("[TextHalo] could not save Accessibility prompt state: {error}");
                 }
             }
 
@@ -632,7 +632,7 @@ pub fn run() {
             });
 
             if let Err(error) = shortcuts::apply(&handle) {
-                eprintln!("[kiegen] shortcut setup failed: {error}");
+                eprintln!("[TextHalo] shortcut setup failed: {error}");
             }
             install_tray(&handle)?;
             overlay::setup(&handle)?;
@@ -662,7 +662,7 @@ pub fn run() {
             permission_status,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running kiegen");
+        .expect("error while running TextHalo");
 }
 
 #[cfg(test)]

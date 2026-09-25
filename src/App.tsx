@@ -866,12 +866,12 @@ export default function App() {
             <Card title="Permission" icon={Icon.textCursor()}>
               {state.trusted ? (
                 <Note kind="secondary" icon={Icon.checkCircle()}>
-                  Accessibility access granted — kiegen can read the selection.
+                  Accessibility access granted — TextHalo can read the selection.
                 </Note>
               ) : (
                 <>
                   <Note kind="warning" icon={Icon.warn()}>
-                    kiegen needs Accessibility access before it can read anything.
+                    TextHalo needs Accessibility access before it can read anything.
                   </Note>
                   <div className="inline">
                     <button
@@ -882,7 +882,7 @@ export default function App() {
                     </button>
                   </div>
                   <div className="card-note">
-                    Switch <strong>kiegen</strong> on under Privacy &amp; Security →
+                    Switch <strong>TextHalo</strong> on under Privacy &amp; Security →
                     Accessibility. This panel notices by itself once you do.
                   </div>
                   <div className="card-note">
@@ -916,7 +916,7 @@ export default function App() {
             </Card>
 
             <Card title="About" icon={Icon.box()}>
-              <div className="card-note">Version 0.1.2 · Apache-2.0</div>
+              <div className="card-note">Version 0.1.3 · Apache-2.0</div>
               <div className="inline">
                 <button className="plain" onClick={() => void checkForUpdates()} disabled={checkingUpdate || installingUpdate}>
                   {checkingUpdate ? "Checking…" : "Check for Updates"}
@@ -1465,7 +1465,7 @@ export default function App() {
         {tab === "capture" ? (
           <div className="pane-inner">
             <h1 className="pane-title">Capture</h1>
-            <p className="pane-subtitle">How kiegen gets hold of the text you selected.</p>
+            <p className="pane-subtitle">How TextHalo gets hold of the text you selected.</p>
 
             <Card title="Capture method" icon={Icon.textCursor()}>
               <div className="row-stack">
