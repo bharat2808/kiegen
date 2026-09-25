@@ -539,7 +539,7 @@ fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id("kiegen")
         .menu(&menu)
         .show_menu_on_left_click(true)
-                .tooltip("TextHalo — speak the selection")
+        .tooltip("TextHalo — speak the selection")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "speak" => {
                 let app = app.clone();
